@@ -24,6 +24,23 @@ static int64_t ticks;
    Initialized by timer_calibrate(). */
 static unsigned loops_per_tick;
 
+/* Condition variable containing all sleeping threads. */
+static struct list sleep_list;
+
+/* Lock for sleep condition variable. */
+static struct lock sleep_lock;
+
+/* Element in the list of sleeping threads. */
+struct sleep_elem
+  {
+    struct list_elem elem;       /* List element for sleep list. */
+    int64_t wake_time;           /* Time for the thread to wake up. */
+
+    struct thread *t;            /* Thread that needs to awaken. */
+  };
+
+static list_less_func sleep_cmp;
+static void timer_wake (void);
 static intr_handler_func timer_interrupt;
 static bool too_many_loops (unsigned loops);
 static void busy_wait (int64_t loops);
@@ -37,6 +54,9 @@ timer_init (void)
 {
   pit_configure_channel (0, 2, TIMER_FREQ);
   intr_register_ext (0x20, timer_interrupt, "8254 Timer");
+
+  list_init (&sleep_list);
+  lock_init (&sleep_lock);
 }
 
 /* Calibrates loops_per_tick, used to implement brief delays. */
@@ -84,6 +104,16 @@ timer_elapsed (int64_t then)
   return timer_ticks () - then;
 }
 
+/* Comparison function for sleeping threads. */
+static bool 
+sleep_cmp (const struct list_elem *a, const struct list_elem *b,
+           void *aux UNUSED)
+{
+  struct sleep_elem *sleeper_a = list_entry (a, struct sleep_elem, elem);
+  struct sleep_elem *sleeper_b = list_entry (b, struct sleep_elem, elem);
+  return sleeper_a->wake_time < sleeper_b->wake_time;
+}
+
 /* Sleeps for approximately TICKS timer ticks.  Interrupts must
    be turned on. */
 void
@@ -91,9 +121,13 @@ timer_sleep (int64_t ticks)
 {
   int64_t start = timer_ticks ();
 
-  ASSERT (intr_get_level () == INTR_ON);
-  while (timer_elapsed (start) < ticks) 
-    thread_yield ();
+  struct sleep_elem sleeper;
+  sleeper.wake_time = start + ticks;
+  sleeper.t = thread_current ();
+
+  intr_disable ();
+  list_insert_ordered (&sleep_list, &sleeper.elem, sleep_cmp, NULL);
+  thread_block ();
 }
 
 /* Sleeps for approximately MS milliseconds.  Interrupts must be
@@ -165,12 +199,33 @@ timer_print_stats (void)
 {
   printf ("Timer: %"PRId64" ticks\n", timer_ticks ());
 }
-
+
+/* Wake up first sleeping thread */
+static void
+timer_wake (void)
+{
+  struct sleep_elem *top_sleeper;
+  int64_t now = timer_ticks ();
+  while (!list_empty (&sleep_list))
+    {
+      struct list_elem *elem = list_begin (&sleep_list);
+      top_sleeper = list_entry (elem, struct sleep_elem, elem);
+      if (top_sleeper->wake_time <= now)
+        {
+          list_pop_front (&sleep_list);
+          thread_unblock (top_sleeper->t);
+        }
+      else
+        break;
+    }
+}
+
 /* Timer interrupt handler. */
 static void
 timer_interrupt (struct intr_frame *args UNUSED)
 {
   ticks++;
+  timer_wake ();
   thread_tick ();
 }
 
