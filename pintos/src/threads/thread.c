@@ -61,7 +61,6 @@ bool thread_mlfqs;
 
 static void kernel_thread (thread_func *, void *aux);
 
-static list_less_func thread_cmp;
 static void idle (void *aux UNUSED);
 static struct thread *running_thread (void);
 static struct thread *next_thread_to_run (void);
@@ -210,7 +209,7 @@ thread_create (const char *name, int priority,
 }
 
 /* Comparison function for putting threads on the ready list. */
-static bool
+bool
 thread_cmp (const struct list_elem *a, const struct list_elem *b,
             void *aux UNUSED)
 {
@@ -329,6 +328,23 @@ thread_yield (void)
   intr_set_level (old_level);
 }
 
+/* Yields the CPU if the current thread is not the highest
+   priority thread on the ready list. This function may be
+   called with interrupts disabled. */
+void
+thread_yield_priority (void)
+{
+  struct thread *t = thread_current ();
+
+  if (!list_empty (&ready_list))
+    {
+      struct thread *next_thread = list_entry (list_begin (&ready_list), 
+                                               struct thread, elem);
+      if (t->priority < next_thread->priority)
+        thread_yield ();
+    }
+}
+
 /* Invoke function 'func' on all threads, passing along 'aux'.
    This function must be called with interrupts off. */
 void
@@ -350,15 +366,15 @@ thread_foreach (thread_action_func *func, void *aux)
 void
 thread_set_priority (int new_priority) 
 {
-  bool check_priority = new_priority < thread_current ()->priority;
-  thread_current ()->priority = new_priority;
-  if (check_priority && !list_empty (&ready_list))
+  struct thread *t = thread_current ();
+  t->b_priority = new_priority;
+  if (donated)
     {
-      struct thread *next_thread = list_entry (list_begin (&ready_list), 
-                                               struct thread, elem);
-      if (next_thread->priority > new_priority)
-        thread_yield ();
+      if (t->b_priority > t->priority)
+        t->priority = t->b_priority;
     }
+  if (new_priority < t->priority)
+    thread_yield_priority ();
 }
 
 /* Returns the current thread's priority. */
@@ -366,6 +382,37 @@ int
 thread_get_priority (void) 
 {
   return thread_current ()->priority;
+}
+
+/* Searches for the next available donation and sets a 
+   thread's priority to the donated priority. If there
+   are no available donations, the priority is set to
+   b_priority. */
+void
+thread_next_donation (struct thread *t)
+{
+  struct thread *donor_thread = NULL;
+  lock_acquire (&t->acquisition_lock);
+  if (!list_empty (&acquired_locks))
+    {
+      struct lock *next_lock = list_entry (list_begin (&acquired_locks), 
+                                           struct lock_elem, elem);
+      if (!list_empty (&next_lock->semaphore.waiters))
+        {
+          donor_thread = list_entry (list_begin (&acquired_locks), struct
+                                     thread, elem);
+          if (donor_thread->priority > t->b_priority)
+            t->priority = donor_thread->priority;
+          else
+            donor_thread = NULL;
+        }
+    }
+  if (donor_thread != NULL)
+    {
+      t->donated = false;
+      t->priority = t->b_priority;
+    }
+  lock_release (&t->acquisition_lock);
 }
 
 /* Sets the current thread's nice value to NICE. */
@@ -487,6 +534,10 @@ init_thread (struct thread *t, const char *name, int priority)
   t->priority = priority;
   t->b_priority = priority;
   t->magic = THREAD_MAGIC;
+  t->donated = false;
+  list_init (&t->acquired_locks);
+  lock_init (&t->acquisition_lock);
+  t->waiting_on_lock = NULL;
 
   old_level = intr_disable ();
   list_push_back (&all_list, &t->allelem);
