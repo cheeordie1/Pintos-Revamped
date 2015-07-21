@@ -216,7 +216,7 @@ thread_cmp (const struct list_elem *a, const struct list_elem *b,
 {
   struct thread *thread_a = list_entry (a, struct thread, elem);
   struct thread *thread_b = list_entry (b, struct thread, elem);
-  return thread_a->priority < thread_b->priority;
+  return thread_a->priority > thread_b->priority;
 }
 
 /* Puts the current thread to sleep.  It will not be scheduled
