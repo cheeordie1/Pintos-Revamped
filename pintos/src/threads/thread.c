@@ -367,14 +367,16 @@ void
 thread_set_priority (int new_priority) 
 {
   struct thread *t = thread_current ();
+  lock_acquire (t->donation_lock);
   t->b_priority = new_priority;
-  if (donated)
+  if (t->donated)
     {
       if (t->b_priority > t->priority)
         t->priority = t->b_priority;
     }
   if (new_priority < t->priority)
     thread_yield_priority ();
+  lock_release (&t->donation_lock);
 }
 
 /* Returns the current thread's priority. */

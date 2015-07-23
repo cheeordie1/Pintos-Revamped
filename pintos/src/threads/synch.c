@@ -214,7 +214,7 @@ lock_init (struct lock *lock)
    thread.
 
    This function may sleep, so it must not be called within an
-   interrupt handler.  This function may be called with
+   interrupt handler. This function may be called with
    interrupts disabled, but interrupts will be turned back on if
    we need to sleep. */
 void
@@ -224,10 +224,15 @@ lock_acquire (struct lock *lock)
   ASSERT (!intr_context ());
   ASSERT (!lock_held_by_current_thread (lock));
 
+  enum intr_level old_level;
+  old_level = intr_disable ();
+
   if (!lock_try_acquire (lock))
     {
       struct thread *t = thread_current ();
       t->waiting_on_lock = lock;
+      thread_donate ();
+      intr_set_level (old_level);
       sema_down (&lock->semaphore);
       t->waiting_on_lock = NULL;
       lock->holder = thread_current ();
@@ -235,6 +240,8 @@ lock_acquire (struct lock *lock)
       l_elem = malloc (sizeof *l_elem);
       list_insert_ordered (&t->acquired_locks, &l_elem->elem, lock_cmp, NULL);
     }
+  else
+    intr_set_level (old_level);
 }
 
 /* Tries to acquires LOCK and returns true if successful or false
