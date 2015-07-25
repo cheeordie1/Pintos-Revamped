@@ -20,6 +20,10 @@
    of thread.h for details. */
 #define THREAD_MAGIC 0xcd6abf4b
 
+/* Maximum number of donations that can be made from one parent lock
+   donating its priority. */
+#define MAX_DONATIONS 8
+
 /* List of processes in THREAD_READY state, that is, processes
    that are ready to run but not actually running. */
 static struct list ready_list;
@@ -213,6 +217,10 @@ bool
 thread_cmp (const struct list_elem *a, const struct list_elem *b,
             void *aux UNUSED)
 {
+  if (a == NULL)
+    return false;
+  if (b == NULL)
+    return true;
   struct thread *thread_a = list_entry (a, struct thread, elem);
   struct thread *thread_b = list_entry (b, struct thread, elem);
   return thread_a->priority > thread_b->priority;
@@ -367,16 +375,20 @@ void
 thread_set_priority (int new_priority) 
 {
   struct thread *t = thread_current ();
-  lock_acquire (t->donation_lock);
+  enum intr_level old_level;
+  old_level = intr_disable ();
+  int old_priority = t->priority;
   t->b_priority = new_priority;
-  if (t->donated)
+  if (t->donated && t->b_priority > t->priority)
     {
-      if (t->b_priority > t->priority)
-        t->priority = t->b_priority;
+      t->priority = t->b_priority;
+      t->donated = false;
     }
-  if (new_priority < t->priority)
+  else if (t->b_priority > t->priority)
+    t->priority = new_priority;
+  if (new_priority < old_priority)
     thread_yield_priority ();
-  lock_release (&t->donation_lock);
+  intr_set_level (old_level);
 }
 
 /* Returns the current thread's priority. */
@@ -385,7 +397,7 @@ thread_get_priority (void)
 {
   return thread_current ()->priority;
 }
-/
+
 /* Searches for the next available donation and sets a 
    thread's priority to the donated priority. If there
    are no available donations, the priority is set to
@@ -394,16 +406,15 @@ void
 thread_next_donation (struct thread *t)
 {
   struct thread *donor_thread = NULL;
-  lock_acquire (&t->donation_lock);
-  t->donated = false;
-  if (!list_empty (&acquired_locks))
+  if (!list_empty (&t->acquired_locks))
     {
-      struct lock *next_lock = list_entry (list_begin (&acquired_locks), 
-                                           struct lock_elem, elem);
-      if (!list_empty (&next_lock->semaphore.waiters))
+      struct list_elem *e = list_begin (&t->acquired_locks);
+      struct lock *next_lock = list_entry (e, struct lock, elem);
+      struct list *next_waiters = &next_lock->semaphore.waiters;
+      if (!list_empty (next_waiters))
         {
-          donor_thread = list_entry (list_begin (&acquired_locks), struct
-                                     thread, elem);
+          donor_thread = list_entry (list_begin (next_waiters), 
+                                     struct thread, elem);
           if (donor_thread->priority > t->b_priority)
             {
               t->priority = donor_thread->priority;
@@ -413,7 +424,31 @@ thread_next_donation (struct thread *t)
     }
   if (!t->donated)
     t->priority = t->b_priority;
-  lock_release (&t->donation_lock);
+}
+
+/* Donate a priority through up to 8 waiting threads. */
+void
+thread_donate (struct thread *donor)
+{
+  struct lock *waiting_on_lock;
+  int priority = donor->priority;
+  uint64_t cnt;
+  for (cnt = 0; cnt < MAX_DONATIONS; cnt++)
+    {
+      waiting_on_lock = donor->waiting_on_lock;
+      if (waiting_on_lock == NULL)
+        return;
+      donor = waiting_on_lock->holder;
+      if (donor == NULL)
+        return;
+      if (donor->priority < priority)
+        {
+          donor->priority = priority;
+          donor->donated = true;
+        }
+      else
+        return;
+    }
 }
 
 /* Sets the current thread's nice value to NICE. */
@@ -537,7 +572,6 @@ init_thread (struct thread *t, const char *name, int priority)
   t->magic = THREAD_MAGIC;
   t->donated = false;
   list_init (&t->acquired_locks);
-  lock_init (&t->donation_lock);
   t->waiting_on_lock = NULL;
 
   old_level = intr_disable ();
