@@ -308,12 +308,24 @@ thread_exit (void)
   process_exit ();
 #endif
 
+  struct thread *t = thread_current ();
+
+  /* Release all acquired locks. */
+  struct list_elem *elem;
+  struct lock *cur_lock;
+  while (!list_empty (&t->acquired_locks))
+    {
+      elem = list_pop_front (&t->acquired_locks);
+      cur_lock = list_entry (elem, struct lock, elem);
+      lock_release (cur_lock);
+    }
+
   /* Remove thread from all threads list, set our status to dying,
      and schedule another process.  That process will destroy us
      when it calls thread_schedule_tail(). */
   intr_disable ();
   list_remove (&thread_current()->allelem);
-  thread_current ()->status = THREAD_DYING;
+  t->status = THREAD_DYING;
   schedule ();
   NOT_REACHED ();
 }
@@ -384,7 +396,7 @@ thread_set_priority (int new_priority)
       t->priority = t->b_priority;
       t->donated = false;
     }
-  else if (t->b_priority > t->priority)
+  else if (!t->donated)
     t->priority = new_priority;
   if (new_priority < old_priority)
     thread_yield_priority ();
