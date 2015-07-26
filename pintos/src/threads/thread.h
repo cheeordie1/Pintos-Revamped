@@ -4,6 +4,7 @@
 #include <debug.h>
 #include <list.h>
 #include <stdint.h>
+#include "fixed-point.h"
 
 /* States in a thread's life cycle. */
 enum thread_status
@@ -92,6 +93,7 @@ struct thread
     struct list_elem allelem;           /* List element for all threads list. */
     bool donated;                       /* Boolean for donation to thread. */
     int nice;                           /* Likelihood to donate. */
+    fp recent_cpu;                      /* Recent CPU time per process. */
 
     /* Shared between thread.c and synch.c. */
     struct list_elem elem;              /* List element. */

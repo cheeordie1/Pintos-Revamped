@@ -24,6 +24,9 @@
    donating its priority. */
 #define MAX_DONATIONS 8
 
+/* Avg number of threads ready to run over past minute. */
+static fp load_avg;
+
 /* List of processes in THREAD_READY state, that is, processes
    that are ready to run but not actually running. */
 static struct list ready_list;
@@ -97,10 +100,12 @@ thread_init (void)
   lock_init (&tid_lock);
   list_init (&ready_list);
   list_init (&all_list);
+  load_avg = 0;
 
   /* Set up a thread structure for the running thread. */
   initial_thread = running_thread ();
   init_thread (initial_thread, "main", PRI_DEFAULT);
+  initial_thread->recent_cpu = 0;
   initial_thread->status = THREAD_RUNNING;
   initial_thread->tid = allocate_tid ();
 }
@@ -137,7 +142,10 @@ thread_tick (void)
     user_ticks++;
 #endif
   else
-    kernel_ticks++;
+    {
+      t->recent_cpu = add_fp_n (t->recent_cpu, 1);
+      kernel_ticks++;
+    }
 
   /* Enforce preemption. */
   if (++thread_ticks >= TIME_SLICE)
@@ -186,6 +194,7 @@ thread_create (const char *name, int priority,
 
   /* Initialize thread. */
   init_thread (t, name, priority);
+  t->recent_cpu = thread_current ()->recent_cpu;
   tid = t->tid = allocate_tid ();
 
   /* Stack frame for kernel_thread(). */
