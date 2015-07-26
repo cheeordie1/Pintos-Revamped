@@ -91,6 +91,7 @@ struct thread
     int b_priority;                     /* Base Priority, donation immune. */
     struct list_elem allelem;           /* List element for all threads list. */
     bool donated;                       /* Boolean for donation to thread. */
+    int nice;                           /* Likelihood to donate. */
 
     /* Shared between thread.c and synch.c. */
     struct list_elem elem;              /* List element. */

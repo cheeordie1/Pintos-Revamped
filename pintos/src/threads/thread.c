@@ -74,6 +74,7 @@ static void *alloc_frame (struct thread *, size_t size);
 static void schedule (void);
 void thread_schedule_tail (struct thread *prev);
 static tid_t allocate_tid (void);
+static void thread_calc_priority (struct thread *);
 
 /* Initializes the threading system by transforming the code
    that's currently running into a thread.  This can't work in
@@ -463,19 +464,28 @@ thread_donate (struct thread *donor)
     }
 }
 
+/* Calculate the thread's priority. */
+void
+thread_calc_priority (struct thread *t)
+{
+  
+}
+
 /* Sets the current thread's nice value to NICE. */
 void
-thread_set_nice (int nice UNUSED) 
+thread_set_nice (int nice) 
 {
-  /* Not yet implemented. */
+  struct thread *t = thread_current ();
+  t->nice = nice;
+  thread_calc_priority (t);
+  thread_yield_priority ();
 }
 
 /* Returns the current thread's nice value. */
 int
 thread_get_nice (void) 
 {
-  /* Not yet implemented. */
-  return 0;
+  return thread_current ()->nice;
 }
 
 /* Returns 100 times the system load average. */
@@ -581,6 +591,7 @@ init_thread (struct thread *t, const char *name, int priority)
   t->stack = (uint8_t *) t + PGSIZE;
   t->priority = priority;
   t->b_priority = priority;
+  t->nice = 0;
   t->magic = THREAD_MAGIC;
   t->donated = false;
   list_init (&t->acquired_locks);
