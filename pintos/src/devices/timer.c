@@ -205,18 +205,20 @@ static void
 timer_wake (void)
 {
   struct sleep_elem *top_sleeper;
-  int64_t now = timer_ticks ();
   while (!list_empty (&sleep_list))
     {
       struct list_elem *elem = list_begin (&sleep_list);
       top_sleeper = list_entry (elem, struct sleep_elem, elem);
-      if (top_sleeper->wake_time <= now)
+      if (top_sleeper->wake_time <= ticks)
         {
-          list_pop_front (&sleep_list);
+          top_sleeper = list_pop_front (&sleep_list);
           thread_unblock (top_sleeper->t);
         }
       else
-        break;
+        {
+          alarm = top_sleeper->wake_time;
+          break;
+        }
     }
 }
 
@@ -225,7 +227,8 @@ static void
 timer_interrupt (struct intr_frame *args UNUSED)
 {
   ticks++;
-  timer_wake ();
+  if (!list_empty (&sleep_list))
+    timer_wake ();
   thread_tick ();
 }
 

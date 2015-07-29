@@ -233,8 +233,7 @@ lock_acquire (struct lock *lock)
 
   if (!lock_try_acquire (lock))
     {
-      if (!thread_mlfqs)
-        thread_donate (t);
+      thread_donate (t);
       intr_set_level (old_level);
       sema_down (&lock->semaphore);
       t->waiting_on_lock = NULL;
@@ -288,8 +287,7 @@ lock_release (struct lock *lock)
 
   list_remove (&lock->elem);
   t->donated = false;
-  if (!thread_mlfqs)
-    thread_next_donation (lock->holder);
+  thread_next_donation (lock->holder);
   lock->holder = NULL;
   sema_up (&lock->semaphore);
   intr_set_level (old_level);
