@@ -211,14 +211,11 @@ timer_wake (void)
       top_sleeper = list_entry (elem, struct sleep_elem, elem);
       if (top_sleeper->wake_time <= ticks)
         {
-          top_sleeper = list_pop_front (&sleep_list);
+          list_remove (&top_sleeper->elem);
           thread_unblock (top_sleeper->t);
         }
       else
-        {
-          alarm = top_sleeper->wake_time;
-          break;
-        }
+        break;
     }
 }
 
