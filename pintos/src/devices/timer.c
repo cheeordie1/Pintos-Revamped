@@ -21,7 +21,7 @@
 static int64_t ticks;
 
 /* Alarm for next thread(s) to wake up. */
-static alarm = INT32_MAX;
+static int alarm = INT32_MAX;
 
 /* Number of loops per timer tick.
    Initialized by timer_calibrate(). */
@@ -120,6 +120,8 @@ sleep_cmp (const struct list_elem *a, const struct list_elem *b,
 void
 timer_sleep (int64_t ticks) 
 {
+  if (ticks <= 0)
+    return;
   int64_t start = timer_ticks ();
 
   struct sleep_elem sleeper;

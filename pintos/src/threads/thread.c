@@ -157,9 +157,9 @@ thread_tick (void)
       if (t != idle_thread)
         t->recent_cpu = add_fp_n (t->recent_cpu, 1);
       enum intr_level old_level;
-      int clock_ticks = timer_ticks ();
       /* Recalculate load_avg each second. 
          Recalculate recent_cpu for every thread. */
+      int clock_ticks = timer_ticks();
       if (clock_ticks % TIMER_FREQ == 0)
         {
           thread_calc_load_avg ();
@@ -174,6 +174,7 @@ thread_tick (void)
           old_level = intr_disable ();
           thread_foreach (thread_calc_priority, NULL);
           intr_set_level (old_level);
+          list_sort (&ready_list, thread_cmp, NULL);
         }
     }
 
@@ -396,8 +397,7 @@ thread_yield_priority (void)
 
   if (!list_empty (&ready_list))
     {
-      struct thread *next_thread = list_entry (list_min (&ready_list,
-                                               thread_cmp, NULL), 
+      struct thread *next_thread = list_entry (list_begin (&ready_list), 
                                                struct thread, elem);
       if (t->priority < next_thread->priority)
         thread_yield ();
@@ -538,11 +538,6 @@ thread_calc_priority (struct thread *t, void *aux UNUSED)
     t->priority = PRI_MIN;
   else if (t->priority > PRI_MAX)
     t->priority = PRI_MAX;
-  if (t->status == THREAD_READY)
-    {
-      list_remove (&t->elem);
-      list_insert_ordered (&ready_list, &t->elem, thread_cmp, NULL);
-    }
 }
 
 /* Calculate the recent amount of cpu used. */
@@ -560,6 +555,11 @@ thread_set_nice (int nice)
   struct thread *t = thread_current ();
   t->nice = nice;
   thread_calc_priority (t, NULL);
+  if (t->status == THREAD_READY)
+    {
+      list_remove (&t->elem);
+      list_insert_ordered (&ready_list, &t->elem, thread_cmp, NULL);
+    }
   thread_yield_priority ();
 }
 
@@ -707,7 +707,7 @@ next_thread_to_run (void)
     return idle_thread;
   else
     {
-      struct list_elem *next = list_min (&ready_list, thread_cmp, NULL);
+      struct list_elem *next = list_begin (&ready_list);
       list_remove (next);
       return list_entry (next, struct thread, elem);
     }
