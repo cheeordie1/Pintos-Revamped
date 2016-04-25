@@ -150,27 +150,34 @@ thread_tick (void)
     user_ticks++;
 #endif
   else
-    {
-      if (thread_mlfqs)
-        t->recent_cpu = add_fp_n (t->recent_cpu, 1);
-      kernel_ticks++;
-    }
-
+    kernel_ticks++;
 
   if (thread_mlfqs)
     {
+      if (t != idle_thread)
+        t->recent_cpu = add_fp_n (t->recent_cpu, 1);
+      enum intr_level old_level;
       int clock_ticks = timer_ticks ();
       /* Recalculate load_avg each second. 
          Recalculate recent_cpu for every thread. */
       if (clock_ticks % TIMER_FREQ == 0)
         {
           thread_calc_load_avg ();
+          old_level = intr_disable ();
           thread_foreach (thread_calc_recent_cpu, NULL);
+          intr_set_level (old_level);
         }
 
       /* Recalculate thread priority every 4th tick. */
       if (clock_ticks % 4 == 0)
-        thread_foreach (thread_calc_priority, NULL);
+        {
+          old_level = intr_disable ();
+          thread_foreach (thread_calc_priority, NULL);
+          intr_set_level (old_level);
+          struct thread *next_t = list_entry (list_min (&ready_list,
+                                              thread_cmp, NULL), 
+                                              struct thread, elem);
+        }
     }
 
   /* Enforce preemption. */
@@ -421,15 +428,11 @@ thread_foreach (thread_action_func *func, void *aux)
 void
 thread_set_priority (int new_priority) 
 {
+  if (thread_mlfqs)
+    return;
   struct thread *t = thread_current ();
   enum intr_level old_level;
   old_level = intr_disable ();
-  if (thread_mlfqs)
-    {
-      t->priority = new_priority;
-      intr_set_level (old_level);
-      return;
-    }
   int old_priority = t->priority;
   t->b_priority = new_priority;
   if (t->donated && t->b_priority > t->priority)
@@ -533,10 +536,19 @@ thread_calc_priority (struct thread *t, void *aux UNUSED)
   fp x1 = i_to_fp (PRI_MAX);
   fp x2 = div_fp_n (t->recent_cpu, 4);
   fp x3 = i_to_fp (t->nice * 2);
-  t->priority = fp_to_in (sub_fp_fp (x1, add_fp_fp (x2, x3)));
+  t->priority = fp_to_in (sub_fp_fp (sub_fp_fp (x1, x2), x3));
+  if (t->priority < PRI_MIN)
+    t->priority = PRI_MIN;
+  else if (t->priority > PRI_MAX)
+    t->priority = PRI_MAX;
+  if (t->status == THREAD_READY)
+    {
+      list_remove (&t->elem);
+      list_insert_ordered (&ready_list, &t->elem, thread_cmp, NULL);
+    }
 }
 
-/* Calculate  */
+/* Calculate the recent amount of cpu used. */
 static void
 thread_calc_recent_cpu (struct thread *t, void *aux UNUSED)
 {
@@ -660,7 +672,7 @@ init_thread (struct thread *t, const char *name, int priority)
   t->status = THREAD_BLOCKED;
   strlcpy (t->name, name, sizeof t->name);
   t->stack = (uint8_t *) t + PGSIZE;
-  t->priority = priority;
+  t->priority = thread_mlfqs ? PRI_DEFAULT : priority;
   t->b_priority = priority;
   t->nice = 0;
   t->magic = THREAD_MAGIC;

@@ -172,10 +172,6 @@ static bool
 lock_cmp (const struct list_elem *a, const struct list_elem *b,
           void *aux UNUSED)
 {
-  if (a == NULL)
-    return false;
-  if (b == NULL)
-    return true;
   struct lock *lock_a = list_entry (a, struct lock, elem);
   struct lock *lock_b = list_entry (b, struct lock, elem);
   if (list_empty (&lock_a->semaphore.waiters))

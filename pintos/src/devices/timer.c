@@ -20,6 +20,9 @@
 /* Number of timer ticks since OS booted. */
 static int64_t ticks;
 
+/* Alarm for next thread(s) to wake up. */
+static alarm = INT32_MAX;
+
 /* Number of loops per timer tick.
    Initialized by timer_calibrate(). */
 static unsigned loops_per_tick;
@@ -28,7 +31,6 @@ static unsigned loops_per_tick;
 static struct list sleep_list;
 
 /* Lock for sleep condition variable. */
-static struct lock sleep_lock;
 
 /* Element in the list of sleeping threads. */
 struct sleep_elem
@@ -56,7 +58,6 @@ timer_init (void)
   intr_register_ext (0x20, timer_interrupt, "8254 Timer");
 
   list_init (&sleep_list);
-  lock_init (&sleep_lock);
 }
 
 /* Calibrates loops_per_tick, used to implement brief delays. */
@@ -125,9 +126,13 @@ timer_sleep (int64_t ticks)
   sleeper.wake_time = start + ticks;
   sleeper.t = thread_current ();
 
-  intr_disable ();
+  enum intr_level old_level;
+  old_level = intr_disable ();
+  if (alarm > sleeper.wake_time)
+    alarm = sleeper.wake_time;
   list_insert_ordered (&sleep_list, &sleeper.elem, sleep_cmp, NULL);
   thread_block ();
+  intr_set_level (old_level);
 }
 
 /* Sleeps for approximately MS milliseconds.  Interrupts must be
@@ -204,6 +209,8 @@ timer_print_stats (void)
 static void
 timer_wake (void)
 {
+  enum intr_level old_level;
+  old_level = intr_disable ();
   struct sleep_elem *top_sleeper;
   while (!list_empty (&sleep_list))
     {
@@ -215,8 +222,14 @@ timer_wake (void)
           thread_unblock (top_sleeper->t);
         }
       else
-        break;
+        {
+          alarm = top_sleeper->wake_time;
+          intr_set_level (old_level);
+          return;
+        }
     }
+  alarm = INT32_MAX;
+  intr_set_level (old_level);
 }
 
 /* Timer interrupt handler. */
@@ -224,7 +237,7 @@ static void
 timer_interrupt (struct intr_frame *args UNUSED)
 {
   ticks++;
-  if (!list_empty (&sleep_list))
+  if (alarm <= ticks)
     timer_wake ();
   thread_tick ();
 }
