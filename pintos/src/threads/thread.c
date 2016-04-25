@@ -174,9 +174,6 @@ thread_tick (void)
           old_level = intr_disable ();
           thread_foreach (thread_calc_priority, NULL);
           intr_set_level (old_level);
-          struct thread *next_t = list_entry (list_min (&ready_list,
-                                              thread_cmp, NULL), 
-                                              struct thread, elem);
         }
     }
 
