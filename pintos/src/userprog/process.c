@@ -471,12 +471,12 @@ push_args (char *file_name, char *cmdline, void **esp)
      on the stack.
      The file name will be the topmost element on the stack, but its address
      is furthest toward the address 0x0. */
-  push (file_name, esp);
+  push (file_name, esp, strnlen (file_name, PGSIZE) + 1);
   argc = 1;
   for (token = strtok_r (cmdline, " ", &save_ptr); token != NULL;
        token = strtok_r (NULL, " ", &save_ptr))
     {
-      push (token, esp)
+      push (token, esp, strnlen (token, PGSIZE) + 1);
       argc++;
     }
   arg_ptr = *esp;
@@ -492,18 +492,32 @@ push_args (char *file_name, char *cmdline, void **esp)
   /* Push the stack addresses of the arguments from the last argument's
      address at the top of the stack to the file name's address at
      the bottom. */
-  
+  int remaining;
+  for (remaining = argc; remaining > 0; remaining--)
+    {
+      push (&arg_ptr, esp, sizeof (void *));
+      arg_ptr = strchr (arg_ptr, '\0') + 1;
+    }
+
+  /* Push the address of the first stack address. */
+  push (esp, esp, sizeof (void *));
+
+  /* Push the number of arguments. */
+  push (&argc, esp, sizeof(int));
+
+  /* Push a fake return address. */
+  *esp = *esp - 4;
+
 }
 
 /* Push an argument onto a ptr by decrementing the pointer by the
    size of the argument and copying the bytes of the argument to the
    data underneath the pointer. */
 static void
-push (char *arg, void **ptr)
+push (void *arg, void **ptr, size_t len)
 {
-  size_t len = strnlen (arg, PGSIZE);
-  *ptr = *ptr - (len + 1);
-  strlcpy (*ptr, arg, len);
+  *ptr = *ptr - len;
+  memcpy (*ptr, arg, len);
 }
 
 /* Adds a mapping from user virtual address UPAGE to kernel
