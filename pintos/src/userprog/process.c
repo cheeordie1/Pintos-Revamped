@@ -28,11 +28,12 @@ static bool load (const char *cmdline, void (**eip) (void), void **esp);
 tid_t
 process_execute (const char *cmdline) 
 {
-  char *cmd_copy;
+  char *cmd_copy, *cmdline_;
   tid_t tid;
 
+  cmdline_ = (char *) cmdline;
   /* Limit the length of the command line args to 1 page. */
-  if (strnlen (cmdline, PGSIZE) == PGSIZE)
+  if (strnlen (cmdline_, PGSIZE) == PGSIZE)
     return TID_ERROR;
 
   /* Make a copy of CMDLINE.
@@ -40,11 +41,11 @@ process_execute (const char *cmdline)
   cmd_copy = palloc_get_page (0);
   if (cmd_copy == NULL)
     return TID_ERROR;
-  strlcpy (cmd_copy, cmdline, PGSIZE);
+  strlcpy (cmd_copy, cmdline_, PGSIZE);
 
   /* Parse the file name from the CMDLINE. */
-  char *file_name, save_ptr;
-  file_name = strtok_r (cmdline, " ", &save_ptr);
+  char *file_name, *save_ptr;
+  file_name = strtok_r (cmdline_, " ", &save_ptr);
 
   /* Create a new thread to execute CMDLINE. */
   tid = thread_create (file_name, PRI_DEFAULT, start_process, cmd_copy);
@@ -208,6 +209,8 @@ static bool validate_segment (const struct Elf32_Phdr *, struct file *);
 static bool load_segment (struct file *file, off_t ofs, uint8_t *upage,
                           uint32_t read_bytes, uint32_t zero_bytes,
                           bool writable);
+static void push_args (char *, char *, void **);
+static void push (void *, void **, size_t);
 
 /* Loads an ELF executable from CMDLINE into the current thread.
    Stores the executable's entry point into *EIP
@@ -222,7 +225,7 @@ load (const char *cmdline, void (**eip) (void), void **esp)
   off_t file_ofs;
   bool success = false;
   int i;
-  char *file_name, save_ptr;
+  char *file_name, *cmdline_, *save_ptr;
 
   /* Allocate and activate page directory. */
   t->pagedir = pagedir_create ();
@@ -231,7 +234,8 @@ load (const char *cmdline, void (**eip) (void), void **esp)
   process_activate ();
 
   /* Parse file name. */
-  file_name = strtok_r (cmdline, " ", &save_ptr);
+  cmdline_ = (char *) cmdline;
+  file_name = strtok_r (cmdline_, " ", &save_ptr);
 
   /* Open executable file. */
   file = filesys_open (file_name);
@@ -464,8 +468,7 @@ static void
 push_args (char *file_name, char *cmdline, void **esp)
 {
   size_t argc;
-  char *token, save_ptr;
-  char *arg_ptr;
+  char *token, *save_ptr, *arg_ptr;
 
   /* Copy the arguments onto the stack in reverse order of their addresses
      on the stack.
@@ -482,7 +485,7 @@ push_args (char *file_name, char *cmdline, void **esp)
   arg_ptr = *esp;
 
   /* Pad the stack to 4-byte aligment. */
-  size_t padding = 4 - (*esp % 4);
+  size_t padding = 4 - ((*(int *) esp) % 4);
   if (padding < 4)
     *esp = *esp - padding;
 
