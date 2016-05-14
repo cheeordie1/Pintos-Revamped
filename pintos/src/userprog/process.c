@@ -50,7 +50,10 @@ process_execute (const char *cmdline)
   /* Create a new thread to execute CMDLINE. */
   tid = thread_create (file_name, PRI_DEFAULT, start_process, cmd_copy);
   if (tid == TID_ERROR)
-    palloc_free_page (cmd_copy); 
+    palloc_free_page (cmd_copy);
+
+  /* TODO wait for child to load executable. */
+
   return tid;
 }
 
