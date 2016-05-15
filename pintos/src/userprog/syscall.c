@@ -61,22 +61,22 @@ syscall_handler (struct intr_frame *f UNUSED)
       case SYS_FILESIZE:
       case SYS_TELL:
       case SYS_CLOSE:
-        arg0 = *(int *) (f->esp + 1);
+        arg0 = *(int *) (f->esp + 4);
         break;
 
       /* Two Arguments. */
       case SYS_CREATE:
       case SYS_SEEK:
-        arg0 = *(int *) (f->esp + 1);
-        arg1 = *(int *) (f->esp + 2);
+        arg0 = *(int *) (f->esp + 4);
+        arg1 = *(int *) (f->esp + 8);
         break;
 
       /* Three Arguments. */
       case SYS_READ:
       case SYS_WRITE:
-        arg0 = *(int *) (f->esp + 1);
-        arg1 = *(int *) (f->esp + 2);
-        arg2 = *(int *) (f->esp + 3);
+        arg0 = *(int *) (f->esp + 4);
+        arg1 = *(int *) (f->esp + 8);
+        arg2 = *(int *) (f->esp + 12);
         break;
 
       default:
@@ -309,7 +309,6 @@ get_user_ (const uint8_t *uaddr)
 {
   if (!is_user_vaddr (uaddr))
     return -1;
-  printf (":(\n");
   return get_user (uaddr);
 }
 

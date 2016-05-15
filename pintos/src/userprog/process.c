@@ -487,12 +487,12 @@ push_args (char *file_name, char *cmdline, void **esp)
   arg_ptr = *esp;
 
   /* Pad the stack to 4-byte aligment. */
-  size_t padding = 4 - ((*(int *) esp) % 4);
+  size_t padding = 4 - ((*(size_t *) esp) % 4);
   if (padding < 4)
-    *esp = ((char *) *esp) - padding;
+    *esp = *esp - padding;
 
   /* Push a null sentinel. */
-  *esp = *esp - 1;
+  *esp = *esp - 4;
 
   /* Push the stack addresses of the arguments from the last argument's
      address at the top of the stack to the file name's address at
@@ -505,15 +505,14 @@ push_args (char *file_name, char *cmdline, void **esp)
     }
 
   /* Push the address of the first stack address. */
-  void **esp_ptr = esp;
-  push (esp_ptr, esp, sizeof (void *));
-
+  void *esp_ptr = *esp;
+  push (&esp_ptr, esp, sizeof (void *));
+ 
   /* Push the number of arguments. */
   push (&argc, esp, sizeof(int));
 
   /* Push a fake return address. */
-  *esp = *esp - 1;
-  hexdump (0, *esp, 40, true);
+  *esp = *esp - 4;
 }
 
 /* Push an argument onto a ptr by decrementing the pointer by the
