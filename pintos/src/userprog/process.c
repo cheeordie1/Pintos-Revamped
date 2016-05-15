@@ -513,6 +513,7 @@ push_args (char *file_name, char *cmdline, void **esp)
 
   /* Push a fake return address. */
   *esp = *esp - 1;
+  hexdump (0, *esp, 40, true);
 }
 
 /* Push an argument onto a ptr by decrementing the pointer by the
