@@ -10,6 +10,8 @@
 #include <user/syscall.h>
 #include "userprog/process.h"
 
+#define WRITE_LIMIT 512
+
 /* Lock used by allocate_pid(). */
 static struct lock pid_lock;
 
@@ -76,6 +78,10 @@ syscall_handler (struct intr_frame *f UNUSED)
         arg1 = *(int *) (f->esp + 2);
         arg2 = *(int *) (f->esp + 3);
         break;
+
+      default:
+        printf ("Could not match the arguments for system call code %d.\n",
+                sys_code);
     }
   
   /* Second switch to execute functions. */
@@ -93,10 +99,39 @@ syscall_handler (struct intr_frame *f UNUSED)
       case SYS_WAIT:
         f->eax = syscall_wait ((pid_t) arg0);
         break;
+      case SYS_CREATE:
+        f->eax = syscall_create ((const char *) arg0, (unsigned) arg1);
+        break;
+      case SYS_REMOVE:
+        f->eax = syscall_remove ((const char *) arg0);
+        break;
+      case SYS_OPEN:
+        f->eax = syscall_open ((const char *) arg0);
+        break;
+      case SYS_FILESIZE:
+        f->eax = syscall_filesize (arg0);
+        break;
+      case SYS_READ:
+        f->eax = syscall_read (arg0, (void *) arg1, (unsigned) arg2);
+        break;
+      case SYS_WRITE:
+        f->eax = syscall_write (arg0, (const void *) arg1, (unsigned) arg2);
+        if (f->eax < 0)
+          thread_exit ();
+        break;
+      case SYS_SEEK:
+        syscall_seek (arg0, (unsigned) arg1);
+        break;
+      case SYS_TELL:
+        f->eax = syscall_tell (arg0);
+        break;
+      case SYS_CLOSE:
+        syscall_close (arg0);
+        break;
 
       default:
-        printf ("Unexpected System Call Code. Terminating thread %s",
-                thread_current ()->name);
+        printf ("Unexpected System Call Code %d\n. Terminating thread %s.\n",
+                sys_code, thread_current ()->name);
         thread_exit ();
     }
 }
@@ -143,7 +178,125 @@ syscall_exec (const char *file)
 static int
 syscall_wait (pid_t pid)
 {
+  while (true){}
+  return 0;
+}
 
+/*Creates a new file called file initially initial_size bytes in size.
+  Returns true if successful, false otherwise. Creating a new file does
+  not open it: opening the new file is a separate operation which would
+  require a open system call.  */
+static bool
+syscall_create (const char *file, unsigned initial_size)
+{
+  return 0;
+}
+
+/* Deletes the file called file. Returns true if successful,
+   false otherwise. A file may be removed regardless of whether
+   it is open or closed, and removing an open file does not close it. */
+static bool
+syscall_remove (const char *file)
+{
+  return 0;
+}
+
+/* Opens the file called file. Returns a nonnegative integer handle
+   called a "file descriptor" (fd), or -1 if the file could not be opened.
+
+   File descriptors numbered 0 and 1 are reserved for the console:
+       fd 0 (STDIN_FILENO) is standard input,
+       fd 1 (STDOUT_FILENO) is standard output.
+
+   When a single file is opened more than once, whether by a single
+   process or different processes, each open returns a new file descriptor. */
+static int
+syscall_open (const char *file)
+{
+  return 0;
+}
+
+/* Returns the size, in bytes, of the file open as fd. */
+static int
+syscall_filesize (int fd)
+{
+  return 0;
+}
+
+/* Reads size bytes from the file open as fd into buffer.
+   Returns the number of bytes actually read (0 at end of file),
+   or -1 if the file could not be read 
+   (due to a condition other than end of file). 
+   Fd 0 reads from the keyboard using input_getc(). */
+static int
+syscall_read (int fd, void *buffer, unsigned length)
+{
+  return 0;
+}
+
+/* Writes size bytes from buffer to the open file fd. Returns the
+   number of bytes actually written, which may be less than size
+   if some bytes could not be written.
+       
+   Writes as many bytes as possible up to end-of-file and return
+   the actual number written, or 0 if no bytes could be written at all.
+
+   Fd 1 writes to the console. 
+   Returns -1 if the buffer has invalid addresses. */
+static int
+syscall_write (int fd, const void *buffer, unsigned length)
+{
+  int bytes_written;
+
+  /* Validate every address in the buffer belongs to the user. */
+  if (!validate_buffer (buffer, length))
+    return -1;
+  /* Do nothing for invalid file descriptors. */
+  if (fd <= STDIN_FILENO)
+    return 0;
+  /* Use putbuf to write to STDIN. */
+  if (fd == STDOUT_FILENO)
+    {
+      while (length >= WRITE_LIMIT)
+        {
+          putbuf (buffer, WRITE_LIMIT);
+          length = length - WRITE_LIMIT;
+          bytes_written += WRITE_LIMIT;
+        }
+      putbuf (buffer, length);
+      bytes_written += length;
+    }
+  /* TODO Use file_write to write to other file descriptors. */
+  return bytes_written;
+}
+
+/* Changes the next byte to be read or written in open file fd to position,
+   expressed in bytes from the beginning of the file. 
+   (Thus, a position of 0 is the file's start.)
+
+   A seek past the current end of a file is not an error. 
+   A later read obtains 0 bytes, indicating end of file. 
+   A later write extends the file, filling any unwritten gap with zeros. */
+static void
+syscall_seek (int fd, unsigned position)
+{
+  return 0;
+}
+
+/* Returns the position of the next byte to be read or written in open
+   file fd, expressed in bytes from the beginning of the file.  */
+static unsigned
+syscall_tell (int fd)
+{
+  return 0;
+}
+
+/* Closes file descriptor fd. Exiting or terminating a process 
+   implicitly closes all its open file descriptors, as if by calling
+   this function for each one.  */
+static void
+syscall_close (int fd)
+{
 }
 
 /* Reads a byte at user virtual address UADDR
@@ -156,6 +309,7 @@ get_user_ (const uint8_t *uaddr)
 {
   if (!is_user_vaddr (uaddr))
     return -1;
+  printf (":(\n");
   return get_user (uaddr);
 }
 
@@ -202,7 +356,7 @@ static bool
 validate_buffer (uint8_t *buf, size_t len)
 {
   int byte;
-  uint16_t cur_byte;
+  size_t cur_byte;
 
   for (cur_byte = 0; cur_byte < len; cur_byte++)
     {

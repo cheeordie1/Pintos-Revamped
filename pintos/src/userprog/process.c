@@ -46,7 +46,6 @@ process_execute (const char *cmdline)
   /* Parse the file name from the CMDLINE. */
   char *file_name, *save_ptr;
   file_name = strtok_r (cmdline_, " ", &save_ptr);
-
   /* Create a new thread to execute CMDLINE. */
   tid = thread_create (file_name, PRI_DEFAULT, start_process, cmd_copy);
   if (tid == TID_ERROR)
@@ -490,10 +489,10 @@ push_args (char *file_name, char *cmdline, void **esp)
   /* Pad the stack to 4-byte aligment. */
   size_t padding = 4 - ((*(int *) esp) % 4);
   if (padding < 4)
-    *esp = *esp - padding;
+    *esp = ((char *) *esp) - padding;
 
   /* Push a null sentinel. */
-  *esp = *esp - 4;
+  *esp = *esp - 1;
 
   /* Push the stack addresses of the arguments from the last argument's
      address at the top of the stack to the file name's address at
@@ -506,14 +505,14 @@ push_args (char *file_name, char *cmdline, void **esp)
     }
 
   /* Push the address of the first stack address. */
-  push (esp, esp, sizeof (void *));
+  void **esp_ptr = esp;
+  push (esp_ptr, esp, sizeof (void *));
 
   /* Push the number of arguments. */
   push (&argc, esp, sizeof(int));
 
   /* Push a fake return address. */
-  *esp = *esp - 4;
-
+  *esp = *esp - 1;
 }
 
 /* Push an argument onto a ptr by decrementing the pointer by the
@@ -522,7 +521,7 @@ push_args (char *file_name, char *cmdline, void **esp)
 static void
 push (void *arg, void **ptr, size_t len)
 {
-  *ptr = *ptr - len;
+  *ptr = ((char *) *ptr) - len;
   memcpy (*ptr, arg, len);
 }
 
