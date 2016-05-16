@@ -5,6 +5,7 @@
 #include <list.h>
 #include <stdint.h>
 #include "fixed-point.h"
+#include "synch.h"
 
 /* States in a thread's life cycle. */
 enum thread_status
@@ -24,6 +25,33 @@ typedef int tid_t;
 #define PRI_MIN 0                       /* Lowest priority. */
 #define PRI_DEFAULT 31                  /* Default priority. */
 #define PRI_MAX 63                      /* Highest priority. */
+
+#ifdef USERPROG
+/* Status for a loading process. */
+enum load_status
+  {
+    LOAD_RUNNING,
+    LOAD_FAILED,
+    LOAD_SUCCESS
+  };
+
+/* A relationship between a child and parent process.
+   
+   Holds the status of the parent and child and a lock to read and write the
+   statuses. This structure should be allocated on the heap, not on the stack,
+   because it is shared between two different stacks, and one may be removed
+   without the other's knowledge.
+   If a child dies first, the parent will delete the relationship data.
+   If a parent dies fist, the child will delete the relationship data. */
+struct relationship
+  {
+    struct list_elem elem;
+    bool parent_exited, child_exited;
+    int exit_status, load_status, child_pid;
+    struct lock relation_lock;
+    struct condition wait_cond;
+  };
+#endif
 
 /* A kernel thread or user process.
 
@@ -104,6 +132,12 @@ struct thread
 #ifdef USERPROG
     /* Owned by userprog/process.c. */
     uint32_t *pagedir;                  /* Page directory. */
+    char *file_name;                    /* Full executable name. */
+
+    /* Shared between a parent and child process. */
+    struct thread *parent;              /* Pointer to parent. */
+    struct relationship *rel;           /* Shared data with parent. */
+    struct list children;               /* List of child relationships. */
 #endif
 
     /* Owned by thread.c. */

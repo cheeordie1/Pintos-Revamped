@@ -14,6 +14,7 @@
 #include "threads/flags.h"
 #include "threads/init.h"
 #include "threads/interrupt.h"
+#include "threads/malloc.h"
 #include "threads/palloc.h"
 #include "threads/thread.h"
 #include "threads/vaddr.h"
@@ -48,10 +49,37 @@ process_execute (const char *cmdline)
   file_name = strtok_r (cmdline_, " ", &save_ptr);
   /* Create a new thread to execute CMDLINE. */
   tid = thread_create (file_name, PRI_DEFAULT, start_process, cmd_copy);
+  
+  if (tid != TID_ERROR)
+    {
+      /* Wait for child to load executable and set the relationship pid. */
+      struct thread *cur = thread_current ();
+      struct list_elem *e;
+      for (e = list_begin (&cur->children); e != list_end (&cur->children);
+           e = list_next (e))
+        {
+          struct relationship *rel = list_entry (e, struct relationship,
+                                                 elem);
+          if (rel->child_pid <= 0)
+            {
+              rel->child_pid = tid;
+              lock_acquire (&rel->relation_lock);
+              while (rel->load_status == LOAD_RUNNING){printf ("WAITING\n");
+                printf ("COND ADDR: %d\n", (int) &rel->wait_cond);
+                cond_wait (&rel->wait_cond, &rel->relation_lock);
+                printf("Checking\n");
+              }
+              printf("PAST IT\n");
+              if (rel->load_status == LOAD_FAILED)
+                tid = TID_ERROR;
+              lock_release (&rel->relation_lock);
+              break;
+            }
+        }
+    }
+
   if (tid == TID_ERROR)
     palloc_free_page (cmd_copy);
-
-  /* TODO wait for child to load executable. */
 
   return tid;
 }
@@ -72,9 +100,23 @@ start_process (void *cmdline_)
   if_.eflags = FLAG_IF | FLAG_MBS;
   success = load (cmdline, &if_.eip, &if_.esp);
 
-  /* If load failed, quit. */
+  /* If load failed, quit.
+     Waiting parent will be awoken. 
+     Otherwise, wake parent. */
   palloc_free_page (cmdline);
-  if (!success) 
+
+  struct thread *cur = thread_current ();
+  lock_acquire (&cur->rel->relation_lock);
+  if (!success)
+    cur->rel->load_status = LOAD_FAILED;
+  else 
+    cur->rel->load_status = LOAD_SUCCESS;
+  printf ("SIGNALING\n");
+  printf ("SIGNAL ADDR %d\n", (int) &cur->rel->wait_cond);
+  cond_signal (&cur->rel->wait_cond, &cur->rel->relation_lock);
+  lock_release (&cur->rel->relation_lock);
+
+  if (!success)
     thread_exit ();
 
   /* Start the user process by simulating a return from an
@@ -89,17 +131,37 @@ start_process (void *cmdline_)
 
 /* Waits for thread TID to die and returns its exit status.  If
    it was terminated by the kernel (i.e. killed due to an
-   exception), returns -1.  If TID is invalid or if it was not a
+   exception), returns -1. If TID is invalid or if it was not a
    child of the calling process, or if process_wait() has already
    been successfully called for the given TID, returns -1
-   immediately, without waiting.
-
-   This function will be implemented in problem 2-2.  For now, it
-   does nothing. */
+   immediately, without waiting. */
 int
 process_wait (tid_t child_tid UNUSED) 
 {
-  return -1;
+  int status = -1;
+  struct thread *cur = thread_current ();
+  struct list_elem *e;
+  for (e = list_begin (&cur->children); e != list_end (&cur->children);
+       e = list_next (e))
+    {
+      struct relationship *rel = list_entry (e, struct relationship,
+                                             elem);
+      if (rel->child_pid == child_tid)
+        {
+          lock_acquire (&rel->relation_lock);
+          while (!rel->child_exited)
+            {
+              cond_wait (&rel->wait_cond, &rel->relation_lock);
+              lock_acquire (&rel->relation_lock);
+            }
+          status = rel->exit_status;
+          /* Subsequent waits on this tid will return -1. */
+          rel->exit_status = -1;
+          lock_release (&rel->relation_lock);
+          break;
+        }
+    }
+  return status;
 }
 
 /* Free the current process's resources. */
@@ -108,6 +170,49 @@ process_exit (void)
 {
   struct thread *cur = thread_current ();
   uint32_t *pd;
+
+  if (cur->parent != NULL)
+    {
+      /* Free malloc'd data. */
+      free (cur->file_name);
+
+      /* If parent is dead, free relationship.
+         Otherwise, set child_exited to true and 
+         signal to potential waiter. */
+      lock_acquire (&cur->rel->relation_lock);
+      if (cur->rel->parent_exited)
+        {
+          lock_release (&cur->rel->relation_lock);
+          free (cur->rel);
+        }
+      else
+        {
+          cur->rel->child_exited = true;
+          cond_signal (&cur->rel->wait_cond, &cur->rel->relation_lock);
+          lock_release (&cur->rel->relation_lock);
+        }
+    }
+
+  /* For each dead child, free relationship.
+     For each non-dead child, set parent_exited to true. */
+  struct list_elem *e = list_begin (&cur->children);
+  while (e != list_end (&cur->children)) 
+    {
+      struct relationship *cur_rel = list_entry (e, struct relationship,
+                                                 elem);
+      e = list_next (e);
+      lock_acquire (&cur_rel->relation_lock);
+      if (cur_rel->child_exited)
+        {
+          lock_release (&cur_rel->relation_lock);
+          free (cur_rel);
+        }
+      else
+        {
+          cur_rel->parent_exited = true;
+          lock_release (&cur_rel->relation_lock);
+        }
+    }
 
   /* Destroy the current process's page directory and switch back
      to the kernel-only page directory. */

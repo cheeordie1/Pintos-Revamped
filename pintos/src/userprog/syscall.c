@@ -12,9 +12,6 @@
 
 #define WRITE_LIMIT 512
 
-/* Lock used by allocate_pid(). */
-static struct lock pid_lock;
-
 static void syscall_handler (struct intr_frame *);
 static void syscall_halt (void);
 static void syscall_exit (int);
@@ -34,13 +31,11 @@ static bool put_user_ (uint8_t *, uint8_t);
 static int get_user (const uint8_t *);
 static bool put_user (uint8_t *, uint8_t);
 static bool validate_buffer (uint8_t *, size_t);
-static pid_t allocate_pid (void);
 
 void
 syscall_init (void) 
 {
   intr_register_int (0x30, 3, INTR_ON, syscall_handler, "syscall");
-  lock_init (&pid_lock);
 }
 
 static void
@@ -116,7 +111,7 @@ syscall_handler (struct intr_frame *f UNUSED)
         break;
       case SYS_WRITE:
         f->eax = syscall_write (arg0, (const void *) arg1, (unsigned) arg2);
-        if (f->eax < 0)
+        if ((int) f->eax < 0)
           thread_exit ();
         break;
       case SYS_SEEK:
@@ -150,7 +145,14 @@ syscall_halt ()
 static void
 syscall_exit (int status)
 {
-  /* TODO Notify parent of exit. */
+  char *name_buf;
+  struct thread *t = thread_current ();
+  t->rel->exit_status = status;
+  if (t->file_name == NULL)
+    name_buf = t->file_name;
+  else 
+    name_buf = t->name;
+  printf ("%s: exit(%d)\n", name_buf, status);
   thread_exit ();
 }
 
@@ -167,10 +169,10 @@ syscall_exec (const char *file)
 {
   if (!validate_buffer ((uint8_t *) file, strnlen (file, PGSIZE)))
     return PID_ERROR;
-  tid_t tid_child = process_execute (file);
-  if (tid_child == TID_ERROR)
+  tid_t tid = process_execute (file);
+  if (tid == TID_ERROR)
     return PID_ERROR;
-  return allocate_pid ();
+  return tid;
 }
 
 /* Waits for a child process pid and retrieves the child's
@@ -178,8 +180,8 @@ syscall_exec (const char *file)
 static int
 syscall_wait (pid_t pid)
 {
-  while (true){}
-  return 0;
+  int status = process_wait (pid);
+  return status;
 }
 
 /*Creates a new file called file initially initial_size bytes in size.
@@ -365,19 +367,4 @@ validate_buffer (uint8_t *buf, size_t len)
       buf++;
     }
   return true;
-}
-
-/* Allocate process id. This identifier of a process is unique
-   among all processes. */
-static pid_t
-allocate_pid ()
-{
-  static pid_t next_pid = 1;
-  pid_t pid;
-
-  lock_acquire (&pid_lock);
-  pid = next_pid++;
-  lock_release (&pid_lock);
-
-  return pid;
 }

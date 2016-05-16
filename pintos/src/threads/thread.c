@@ -8,6 +8,7 @@
 #include "threads/flags.h"
 #include "threads/interrupt.h"
 #include "threads/intr-stubs.h"
+#include "threads/malloc.h"
 #include "threads/palloc.h"
 #include "threads/switch.h"
 #include "threads/synch.h"
@@ -687,6 +688,22 @@ init_thread (struct thread *t, const char *name, int priority)
   t->donated = false;
   list_init (&t->acquired_locks);
   t->waiting_on_lock = NULL;
+
+#ifdef USERPROG
+  if (t != initial_thread)
+    {
+      t->parent = thread_current ();
+      t->file_name = malloc (strnlen (name, PGSIZE) + 1);
+      strlcpy (t->file_name, name, sizeof t->file_name);
+      t->rel = calloc (1, sizeof (struct relationship));
+      t->rel->exit_status = -1;
+      t->rel->load_status = LOAD_RUNNING;
+      lock_init (&t->rel->relation_lock);
+      cond_init (&t->rel->wait_cond);
+      list_push_back (&t->parent->children, &t->rel->elem);
+    }
+  list_init (&t->children);
+#endif
 
   old_level = intr_disable ();
   list_push_back (&all_list, &t->allelem);
