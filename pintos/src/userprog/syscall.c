@@ -41,6 +41,9 @@ syscall_init (void)
 static void
 syscall_handler (struct intr_frame *f UNUSED) 
 {
+  if (!validate_buffer (f->esp, sizeof (int)))
+    thread_exit ();
+
   int sys_code = *(int *) f->esp;
   int arg0, arg1, arg2;
 
@@ -56,12 +59,17 @@ syscall_handler (struct intr_frame *f UNUSED)
       case SYS_FILESIZE:
       case SYS_TELL:
       case SYS_CLOSE:
+        if (!validate_buffer (f->esp + 4, sizeof (int)))
+          syscall_exit (-1);
         arg0 = *(int *) (f->esp + 4);
         break;
 
       /* Two Arguments. */
       case SYS_CREATE:
       case SYS_SEEK:
+        if (!validate_buffer (f->esp + 4, sizeof (int)) ||
+            !validate_buffer (f->esp + 8, sizeof (int)))
+          syscall_exit (-1);
         arg0 = *(int *) (f->esp + 4);
         arg1 = *(int *) (f->esp + 8);
         break;
@@ -69,6 +77,10 @@ syscall_handler (struct intr_frame *f UNUSED)
       /* Three Arguments. */
       case SYS_READ:
       case SYS_WRITE:
+        if (!validate_buffer (f->esp + 4, sizeof (int)) ||
+            !validate_buffer (f->esp + 8, sizeof (int)) ||
+            !validate_buffer (f->esp + 12, sizeof (int)))
+          syscall_exit (-1);
         arg0 = *(int *) (f->esp + 4);
         arg1 = *(int *) (f->esp + 8);
         arg2 = *(int *) (f->esp + 12);
