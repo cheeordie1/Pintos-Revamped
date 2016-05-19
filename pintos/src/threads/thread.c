@@ -231,6 +231,11 @@ thread_create (const char *name, int priority,
     thread_calc_priority (t, NULL);
   tid = t->tid = allocate_tid ();
 
+#ifdef USERPROG
+  /* Set tid in relationship. */
+  t->rel->child_pid = t->tid;
+#endif
+
   /* Stack frame for kernel_thread(). */
   kf = alloc_frame (t, sizeof *kf);
   kf->eip = NULL;

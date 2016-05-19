@@ -60,16 +60,11 @@ process_execute (const char *cmdline)
         {
           struct relationship *rel = list_entry (e, struct relationship,
                                                  elem);
-          if (rel->child_pid <= 0)
+          if (rel->child_pid == tid)
             {
-              rel->child_pid = tid;
               lock_acquire (&rel->relation_lock);
-              while (rel->load_status == LOAD_RUNNING){printf ("WAITING\n");
-                printf ("COND ADDR: %d\n", (int) &rel->wait_cond);
+              while (rel->load_status == LOAD_RUNNING)
                 cond_wait (&rel->wait_cond, &rel->relation_lock);
-                printf("Checking\n");
-              }
-              printf("PAST IT\n");
               if (rel->load_status == LOAD_FAILED)
                 tid = TID_ERROR;
               lock_release (&rel->relation_lock);
@@ -111,8 +106,6 @@ start_process (void *cmdline_)
     cur->rel->load_status = LOAD_FAILED;
   else 
     cur->rel->load_status = LOAD_SUCCESS;
-  printf ("SIGNALING\n");
-  printf ("SIGNAL ADDR %d\n", (int) &cur->rel->wait_cond);
   cond_signal (&cur->rel->wait_cond, &cur->rel->relation_lock);
   lock_release (&cur->rel->relation_lock);
 
