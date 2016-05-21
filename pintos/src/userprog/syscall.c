@@ -2,15 +2,17 @@
 #include <stdio.h>
 #include <string.h>
 #include <syscall-nr.h>
+#include <user/syscall.h>
 #include "devices/shutdown.h"
+#include "filesys/filesys.h"
 #include "threads/interrupt.h"
 #include "threads/synch.h"
 #include "threads/thread.h"
 #include "threads/vaddr.h"
-#include <user/syscall.h>
 #include "userprog/process.h"
 
 #define WRITE_LIMIT 512
+#define FILE_NAME_LIMIT 14
 
 static void syscall_handler (struct intr_frame *);
 static void syscall_halt (void);
@@ -30,19 +32,23 @@ static int get_user_ (const uint8_t *);
 static bool put_user_ (uint8_t *, uint8_t);
 static int get_user (const uint8_t *);
 static bool put_user (uint8_t *, uint8_t);
+static int open_fd (struct file *);
 static bool validate_buffer (uint8_t *, size_t);
+
+static struct lock GENGAR;
 
 void
 syscall_init (void) 
 {
   intr_register_int (0x30, 3, INTR_ON, syscall_handler, "syscall");
+  lock_init (&GENGAR);
 }
 
 static void
 syscall_handler (struct intr_frame *f UNUSED) 
 {
   if (!validate_buffer (f->esp, sizeof (int)))
-    thread_exit ();
+    syscall_exit (-1);
 
   int sys_code = *(int *) f->esp;
   int arg0, arg1, arg2;
@@ -159,12 +165,27 @@ syscall_exit (int status)
 {
   char *name_buf;
   struct thread *t = thread_current ();
+  int cur_fd;
+  struct file **fd_file;
+
+  /* Set exit status and print exit string. */
   t->rel->exit_status = status;
   if (t->file_name == NULL)
     name_buf = t->file_name;
   else 
     name_buf = t->name;
   printf ("%s: exit(%d)\n", name_buf, status);
+  /* Close all open fds. */
+  fd_file = t->fd_table;
+  for (cur_fd = MIN_FD; cur_fd < t->fdt_size; cur_fd++)
+    {
+      if (*fd_file != NULL)
+        {
+          syscall_close (*fd_file);
+          *fd_file++ = NULL;
+        }
+    }
+  /* Exit. */
   thread_exit ();
 }
 
@@ -179,7 +200,7 @@ syscall_exit (int status)
 static pid_t
 syscall_exec (const char *file)
 {
-  if (!validate_buffer ((uint8_t *) file, strnlen (file, PGSIZE)))
+  if (!validate_buffer ((uint8_t *) file, strnlen (file, PGSIZE) + 1))
     return PID_ERROR;
   tid_t tid = process_execute (file);
   if (tid == TID_ERROR)
@@ -203,7 +224,21 @@ syscall_wait (pid_t pid)
 static bool
 syscall_create (const char *file, unsigned initial_size)
 {
-  return 0;
+  bool success;
+
+  /* Validate file name. */
+  if (get_user_ ((const uint8_t *) file) < 0)
+    syscall_exit (-1);
+  int len = strnlen (file, PGSIZE);
+  if (len > FILE_NAME_LIMIT)
+    return 0;
+  if (!validate_buffer (file, len + 1))
+    syscall_exit (-1);
+  /* Create file. */
+  lock_acquire (&GENGAR);
+  success = filesys_create (file, initial_size);
+  lock_release (&GENGAR);
+  return success;
 }
 
 /* Deletes the file called file. Returns true if successful,
@@ -227,7 +262,23 @@ syscall_remove (const char *file)
 static int
 syscall_open (const char *file)
 {
-  return 0;
+  /* Validate file name. */
+  if (get_user_ ((const uint8_t *) file) < 0)
+    syscall_exit (-1);
+  int len = strnlen (file, PGSIZE);
+  if (!validate_buffer (file, len + 1))
+    syscall_exit (-1);
+  /* Open file. */
+  lock_acquire (&GENGAR);
+  struct file *f = filesys_open (file);
+  lock_release (&GENGAR);
+  if (f == NULL)
+    return -1;
+  int fd = open_fd (f);
+  /* Fd will return -1 if no more files can be opened. */
+  if (fd < 0)
+    filesys_remove (file);
+  return fd;
 }
 
 /* Returns the size, in bytes, of the file open as fd. */
@@ -273,7 +324,9 @@ syscall_write (int fd, const void *buffer, unsigned length)
     {
       while (length >= WRITE_LIMIT)
         {
+          lock_acquire (&GENGAR);
           putbuf (buffer, WRITE_LIMIT);
+          lock_release (&GENGAR);
           length = length - WRITE_LIMIT;
           bytes_written += WRITE_LIMIT;
         }
@@ -361,6 +414,33 @@ put_user (uint8_t *udst, uint8_t byte)
   asm ("movl $1f, %0; movb %b2, %1; 1:"
        : "=&a" (error_code), "=m" (*udst) : "q" (byte));
   return error_code != -1;
+}
+
+/* Allocate a file descriptor in the current thread's fd_table. If the
+   table is full, reallocate. */
+static int
+open_fd (struct file *file)
+{
+  int fd;
+  struct thread *t = thread_current ();
+  fd = t->next_fd;
+  t->fd_table [fd] = file;
+  /* Search for next free fd. */
+  for (; t->next_free < t->fdt_size; t->next_free++)
+    {
+      if (t->fd_table [t->next_free] == NULL)
+        break;
+    }
+  /* Reallocate table if it is filled. */
+  if (t->next_fd == (t->fdt_size))
+    {
+      t->fdt_size *= 2;
+      t->fd_table = realloc (t->fd_table, t->fdt_size);
+      /* Exit thread on realloc failure. Hopefully doesn't happen. */
+      if (t->fd_table == NULL)
+        return -1;
+    }
+  return fd;
 }
 
 /* Validate a buffer by checking that its start and end are

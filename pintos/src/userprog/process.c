@@ -143,10 +143,7 @@ process_wait (tid_t child_tid UNUSED)
         {
           lock_acquire (&rel->relation_lock);
           while (!rel->child_exited)
-            {
-              cond_wait (&rel->wait_cond, &rel->relation_lock);
-              lock_acquire (&rel->relation_lock);
-            }
+            cond_wait (&rel->wait_cond, &rel->relation_lock);
           status = rel->exit_status;
           /* Subsequent waits on this tid will return -1. */
           rel->exit_status = -1;
@@ -163,7 +160,12 @@ process_exit (void)
 {
   struct thread *cur = thread_current ();
   uint32_t *pd;
+  int cur_fd;
 
+  /* Free fd_table. Fds should have been closed by exit syscall. */
+  free (cur->fd_table);
+
+  /* Deal with children. */
   if (cur->parent != NULL)
     {
       /* Free malloc'd data. */

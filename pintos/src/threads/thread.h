@@ -27,6 +27,15 @@ typedef int tid_t;
 #define PRI_MAX 63                      /* Highest priority. */
 
 #ifdef USERPROG
+#define MIN_FD 3
+#define MIN_NUM_FDS 128
+/* Structure for storing file pointers and names. */
+struct fde
+  {
+    struct file *f;
+    char *f_name;
+  };
+
 /* Status for a loading process. */
 enum load_status
   {
@@ -133,6 +142,9 @@ struct thread
     /* Owned by userprog/process.c. */
     uint32_t *pagedir;                  /* Page directory. */
     char *file_name;                    /* Full executable name. */
+    struct fde *fd_table;               /* Dynamic Array of open fds. */
+    int fdt_size;                       /* Current size of fd table. */
+    int next_fd;                        /* Next free file descriptor. */
 
     /* Shared between a parent and child process. */
     struct thread *parent;              /* Pointer to parent. */
