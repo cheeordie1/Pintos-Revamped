@@ -705,8 +705,8 @@ init_thread (struct thread *t, const char *name, int priority)
       lock_init (&t->rel->relation_lock);
       cond_init (&t->rel->wait_cond);
       list_push_back (&t->parent->children, &t->rel->elem);
+      t->fd_table = calloc (MIN_NUM_FDS, sizeof (struct file *));
     }
-  t->fd_table = calloc (MIN_NUM_FDS, sizeof (struct fde));
   t->fdt_size = MIN_NUM_FDS;
   t->next_fd = MIN_FD;
   list_init (&t->children);

@@ -162,14 +162,12 @@ process_exit (void)
   uint32_t *pd;
   int cur_fd;
 
-  /* Free fd_table. Fds should have been closed by exit syscall. */
-  free (cur->fd_table);
-
   /* Deal with children. */
   if (cur->parent != NULL)
     {
       /* Free malloc'd data. */
       free (cur->file_name);
+      free (cur->fd_table);
 
       /* If parent is dead, free relationship.
          Otherwise, set child_exited to true and 

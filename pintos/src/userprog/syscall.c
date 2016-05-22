@@ -4,6 +4,7 @@
 #include <syscall-nr.h>
 #include <user/syscall.h>
 #include "devices/shutdown.h"
+#include "filesys/file.h"
 #include "filesys/filesys.h"
 #include "threads/interrupt.h"
 #include "threads/synch.h"
@@ -32,8 +33,8 @@ static int get_user_ (const uint8_t *);
 static bool put_user_ (uint8_t *, uint8_t);
 static int get_user (const uint8_t *);
 static bool put_user (uint8_t *, uint8_t);
-static int open_fd (struct file *);
-static bool validate_buffer (uint8_t *, size_t);
+static int open_fd (struct file *, const char *);
+static bool validate_buffer (const char *, size_t);
 
 static struct lock GENGAR;
 
@@ -47,7 +48,7 @@ syscall_init (void)
 static void
 syscall_handler (struct intr_frame *f UNUSED) 
 {
-  if (!validate_buffer (f->esp, sizeof (int)))
+  if (!validate_buffer ((const char *) f->esp, sizeof (int)))
     syscall_exit (-1);
 
   int sys_code = *(int *) f->esp;
@@ -65,7 +66,7 @@ syscall_handler (struct intr_frame *f UNUSED)
       case SYS_FILESIZE:
       case SYS_TELL:
       case SYS_CLOSE:
-        if (!validate_buffer (f->esp + 4, sizeof (int)))
+        if (!validate_buffer ((const char *) f->esp + 4, sizeof (int)))
           syscall_exit (-1);
         arg0 = *(int *) (f->esp + 4);
         break;
@@ -73,8 +74,8 @@ syscall_handler (struct intr_frame *f UNUSED)
       /* Two Arguments. */
       case SYS_CREATE:
       case SYS_SEEK:
-        if (!validate_buffer (f->esp + 4, sizeof (int)) ||
-            !validate_buffer (f->esp + 8, sizeof (int)))
+        if (!validate_buffer ((const char *) f->esp + 4, sizeof (int)) ||
+            !validate_buffer ((const char *) f->esp + 8, sizeof (int)))
           syscall_exit (-1);
         arg0 = *(int *) (f->esp + 4);
         arg1 = *(int *) (f->esp + 8);
@@ -83,9 +84,9 @@ syscall_handler (struct intr_frame *f UNUSED)
       /* Three Arguments. */
       case SYS_READ:
       case SYS_WRITE:
-        if (!validate_buffer (f->esp + 4, sizeof (int)) ||
-            !validate_buffer (f->esp + 8, sizeof (int)) ||
-            !validate_buffer (f->esp + 12, sizeof (int)))
+        if (!validate_buffer ((const char *) f->esp + 4, sizeof (int)) ||
+            !validate_buffer ((const char *) f->esp + 8, sizeof (int)) ||
+            !validate_buffer ((const char *) f->esp + 12, sizeof (int)))
           syscall_exit (-1);
         arg0 = *(int *) (f->esp + 4);
         arg1 = *(int *) (f->esp + 8);
@@ -180,10 +181,7 @@ syscall_exit (int status)
   for (cur_fd = MIN_FD; cur_fd < t->fdt_size; cur_fd++)
     {
       if (*fd_file != NULL)
-        {
-          syscall_close (*fd_file);
-          *fd_file++ = NULL;
-        }
+        syscall_close (cur_fd);
     }
   /* Exit. */
   thread_exit ();
@@ -200,7 +198,10 @@ syscall_exit (int status)
 static pid_t
 syscall_exec (const char *file)
 {
-  if (!validate_buffer ((uint8_t *) file, strnlen (file, PGSIZE) + 1))
+  /* Validate file name. */
+  if (get_user_ ((const uint8_t *) file) < 0)
+    syscall_exit (-1);
+  if (!validate_buffer (file, strnlen (file, PGSIZE) + 1))
     return PID_ERROR;
   tid_t tid = process_execute (file);
   if (tid == TID_ERROR)
@@ -247,7 +248,19 @@ syscall_create (const char *file, unsigned initial_size)
 static bool
 syscall_remove (const char *file)
 {
-  return 0;
+  bool success;
+
+  /* Validate file name. */
+  if (get_user_ ((const uint8_t *) file) < 0)
+    syscall_exit (-1);
+  int len = strnlen (file, PGSIZE);
+  if (!validate_buffer (file, len + 1))
+    syscall_exit (-1);
+  /* Remove file. */
+  lock_acquire (&GENGAR);
+  success = filesys_remove (file);
+  lock_release (&GENGAR);
+  return success;
 }
 
 /* Opens the file called file. Returns a nonnegative integer handle
@@ -274,10 +287,14 @@ syscall_open (const char *file)
   lock_release (&GENGAR);
   if (f == NULL)
     return -1;
-  int fd = open_fd (f);
+  int fd = open_fd (f, file);
   /* Fd will return -1 if no more files can be opened. */
   if (fd < 0)
-    filesys_remove (file);
+    {
+      lock_acquire (&GENGAR);
+      file_close (f);
+      lock_release (&GENGAR);
+    }
   return fd;
 }
 
@@ -285,7 +302,18 @@ syscall_open (const char *file)
 static int
 syscall_filesize (int fd)
 {
-  return 0;
+  int len;
+  struct thread *t = thread_current ();
+  /* Check fd. */
+  if (fd >= t->fdt_size || fd < MIN_FD)
+    return -1;
+  if (t->fd_table [fd] == NULL)
+    return -1;
+  /* Get file length. */
+  lock_acquire (&GENGAR);
+  len = file_length (t->fd_table [fd]);
+  lock_release (&GENGAR);
+  return len;
 }
 
 /* Reads size bytes from the file open as fd into buffer.
@@ -314,7 +342,7 @@ syscall_write (int fd, const void *buffer, unsigned length)
   int bytes_written;
 
   /* Validate every address in the buffer belongs to the user. */
-  if (!validate_buffer (buffer, length))
+  if (!validate_buffer ((const char *) buffer, length))
     return -1;
   /* Do nothing for invalid file descriptors. */
   if (fd <= STDIN_FILENO)
@@ -330,7 +358,9 @@ syscall_write (int fd, const void *buffer, unsigned length)
           length = length - WRITE_LIMIT;
           bytes_written += WRITE_LIMIT;
         }
+      lock_acquire (&GENGAR);
       putbuf (buffer, length);
+      lock_release (&GENGAR);
       bytes_written += length;
     }
   /* TODO Use file_write to write to other file descriptors. */
@@ -347,7 +377,16 @@ syscall_write (int fd, const void *buffer, unsigned length)
 static void
 syscall_seek (int fd, unsigned position)
 {
-  return 0;
+  struct thread *t = thread_current ();
+  /* Check fd. */
+  if (fd < MIN_FD || fd >= t->fdt_size)
+    return;
+  if (t->fd_table [fd] == NULL)
+    return;
+  /* Seek file position. */
+  lock_acquire (&GENGAR);
+  file_seek (t->fd_table [fd], position);
+  lock_release (&GENGAR);
 }
 
 /* Returns the position of the next byte to be read or written in open
@@ -355,7 +394,18 @@ syscall_seek (int fd, unsigned position)
 static unsigned
 syscall_tell (int fd)
 {
-  return 0;
+  unsigned int pos;
+  struct thread *t = thread_current ();
+  /* Check fd. */
+  if (fd < MIN_FD || fd >= t->fdt_size)
+    return 0;
+  if (t->fd_table [fd] == NULL)
+    return 0;
+  /* Tell position of file. */
+  lock_acquire (&GENGAR);
+  pos = file_tell (t->fd_table [fd]);
+  lock_release (&GENGAR);
+  return pos;
 }
 
 /* Closes file descriptor fd. Exiting or terminating a process 
@@ -364,6 +414,19 @@ syscall_tell (int fd)
 static void
 syscall_close (int fd)
 {
+  struct thread *t = thread_current ();
+  /* Check fd. */
+  if (fd < MIN_FD || fd >= t->fdt_size)
+    return;
+  if (t->fd_table [fd] == NULL)
+    return;
+  /* Close fd. */
+  lock_acquire (&GENGAR);
+  file_close (t->fd_table [fd]);
+  lock_release (&GENGAR);
+  t->fd_table [fd] = NULL;
+  if (fd < t->next_fd)
+    t->next_fd = fd;
 }
 
 /* Reads a byte at user virtual address UADDR
@@ -419,16 +482,18 @@ put_user (uint8_t *udst, uint8_t byte)
 /* Allocate a file descriptor in the current thread's fd_table. If the
    table is full, reallocate. */
 static int
-open_fd (struct file *file)
+open_fd (struct file *file, char const *name)
 {
   int fd;
   struct thread *t = thread_current ();
+
+  /* Set next entry. */
   fd = t->next_fd;
   t->fd_table [fd] = file;
   /* Search for next free fd. */
-  for (; t->next_free < t->fdt_size; t->next_free++)
+  for (; t->next_fd < t->fdt_size; t->next_fd++)
     {
-      if (t->fd_table [t->next_free] == NULL)
+      if (t->fd_table [t->next_fd] == NULL)
         break;
     }
   /* Reallocate table if it is filled. */
@@ -446,7 +511,7 @@ open_fd (struct file *file)
 /* Validate a buffer by checking that its start and end are
    below PHYS_BASE and that each byte is okay to read. */
 static bool
-validate_buffer (uint8_t *buf, size_t len)
+validate_buffer (const char *buf, size_t len)
 {
   int byte;
   size_t cur_byte;
