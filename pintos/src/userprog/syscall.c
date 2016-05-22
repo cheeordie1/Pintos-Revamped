@@ -131,8 +131,6 @@ syscall_handler (struct intr_frame *f UNUSED)
         break;
       case SYS_WRITE:
         f->eax = syscall_write (arg0, (const void *) arg1, (unsigned) arg2);
-        if ((int) f->eax < 0)
-          thread_exit ();
         break;
       case SYS_SEEK:
         syscall_seek (arg0, (unsigned) arg1);
@@ -176,7 +174,7 @@ syscall_exit (int status)
   fd_file = t->fd_table;
   for (cur_fd = MIN_FD; cur_fd < t->fdt_size; cur_fd++)
     {
-      if (*fd_file != NULL)
+      if (*fd_file++ != NULL)
         syscall_close (cur_fd);
     }
   /* Exit. */
@@ -198,7 +196,7 @@ syscall_exec (const char *file)
   if (get_user_ ((const uint8_t *) file) < 0)
     syscall_exit (-1);
   if (!validate_buffer (file, strnlen (file, PGSIZE) + 1))
-    return PID_ERROR;
+    syscall_exit (-1);
   tid_t tid = process_execute (file);
   if (tid == TID_ERROR)
     return PID_ERROR;
@@ -228,7 +226,7 @@ syscall_create (const char *file, unsigned initial_size)
     syscall_exit (-1);
   int len = strnlen (file, PGSIZE);
   if (len > FILE_NAME_LIMIT)
-    return 0;
+    return false;
   if (!validate_buffer (file, len + 1))
     syscall_exit (-1);
   /* Create file. */
@@ -321,9 +319,10 @@ static int
 syscall_read (int fd, void *buffer, unsigned length)
 {
   char *buffer_ptr = buffer;
-  int bytes_read, bytes;
+  uint16_t bytes_read = 0, bytes = 0, cur;
+  struct thread *t = thread_current ();
 
-  if (fd < STDIN_FILENO)
+  if (fd < STDIN_FILENO || fd >= t->fdt_size)
     return -1;
   /* Read from stdin. File descriptor 0. */
   if (fd == STDIN_FILENO)
@@ -332,7 +331,7 @@ syscall_read (int fd, void *buffer, unsigned length)
       while (bytes_read < length)
         {
           c = input_getc ();
-          if (!put_user_ (buffer_ptr++, c))
+          if (!put_user_ ((uint8_t *) buffer_ptr++, c))
             return -1;
           bytes_read++;
         }
@@ -340,11 +339,12 @@ syscall_read (int fd, void *buffer, unsigned length)
   else 
     {
       /* Read from other file descriptors. */
-      int cur;
-      char buf [WR_LIMIT];
-      struct thread *t = thread_current ();
+      char *buf = malloc (WR_LIMIT);
       if (t->fd_table [fd] == NULL)
-        return -1;
+        {
+          free (buf);
+          return -1;
+        }
       while (bytes_read < length)
         {
           lock_acquire (&GENGAR);
@@ -352,13 +352,17 @@ syscall_read (int fd, void *buffer, unsigned length)
           lock_release (&GENGAR);
           for (cur = 0; cur < bytes; cur++)
             {
-              if (!put_user_ (buffer_ptr++, buf[cur]))
-                return -1;
+              if (!put_user_ (buffer_ptr++, buf [cur]))
+                {
+                  free (buf);
+                  syscall_exit (-1);
+                }
             }
           bytes_read += bytes;
           if (bytes < WR_LIMIT)
             break;
         }
+      free (buf);
     }
   return bytes_read;
 }
@@ -375,43 +379,46 @@ syscall_read (int fd, void *buffer, unsigned length)
 static int
 syscall_write (int fd, const void *buffer, unsigned length)
 {
-  int bytes_written, bytes;
+  int bytes_written = 0, bytes;
+  struct thread *t = thread_current ();
+  char *buffer_ptr = buffer;
 
   /* Validate every address in the buffer belongs to the user. */
-  if (!validate_buffer ((const char *) buffer, length))
-    return -1;
+  if (!validate_buffer ((const char *) buffer_ptr, length))
+    syscall_exit (-1);
   /* Do nothing for invalid file descriptors. */
-  if (fd <= STDIN_FILENO)
-    return 0;
+  if (fd <= STDIN_FILENO || fd >= t->fdt_size)
+    return -1;
   /* Use putbuf to write to STDIN. */
   if (fd == STDOUT_FILENO)
     {
       while (length >= WR_LIMIT)
         {
           lock_acquire (&GENGAR);
-          putbuf (buffer, WR_LIMIT);
+          putbuf (buffer_ptr, WR_LIMIT);
           lock_release (&GENGAR);
+          buffer_ptr += WR_LIMIT;
           length = length - WR_LIMIT;
           bytes_written += WR_LIMIT;
         }
       lock_acquire (&GENGAR);
-      putbuf (buffer, length);
+      putbuf (buffer_ptr, length);
       lock_release (&GENGAR);
       bytes_written += length;
     }
   else 
     {
       /* Use file_write to write to other file descriptors. */
-      struct thread *t = thread_current ();
       if (t->fd_table [fd] == NULL)
         return -1;
       while (bytes_written < length)
         {
           lock_acquire (&GENGAR);
-          bytes = file_write (t->fd_table [fd], buffer, WR_LIMIT);
+          bytes = file_write (t->fd_table [fd], buffer_ptr, WR_LIMIT);
           lock_release (&GENGAR);
-          /* Break if eof reached before length bytes written. */
+          buffer_ptr += bytes;
           bytes_written += bytes;
+          /* Break if eof reached before length bytes written. */
           if (bytes < WR_LIMIT)
             break;
         }
