@@ -3,6 +3,7 @@
 #include <string.h>
 #include <syscall-nr.h>
 #include <user/syscall.h>
+#include "devices/input.h"
 #include "devices/shutdown.h"
 #include "filesys/file.h"
 #include "filesys/filesys.h"
@@ -12,7 +13,7 @@
 #include "threads/vaddr.h"
 #include "userprog/process.h"
 
-#define WRITE_LIMIT 512
+#define WR_LIMIT 4096
 #define FILE_NAME_LIMIT 14
 
 static void syscall_handler (struct intr_frame *);
@@ -164,18 +165,13 @@ syscall_halt ()
 static void
 syscall_exit (int status)
 {
-  char *name_buf;
   struct thread *t = thread_current ();
   int cur_fd;
   struct file **fd_file;
 
   /* Set exit status and print exit string. */
   t->rel->exit_status = status;
-  if (t->file_name == NULL)
-    name_buf = t->file_name;
-  else 
-    name_buf = t->name;
-  printf ("%s: exit(%d)\n", name_buf, status);
+  printf ("%s: exit(%d)\n", t->file_name, status);
   /* Close all open fds. */
   fd_file = t->fd_table;
   for (cur_fd = MIN_FD; cur_fd < t->fdt_size; cur_fd++)
@@ -324,7 +320,47 @@ syscall_filesize (int fd)
 static int
 syscall_read (int fd, void *buffer, unsigned length)
 {
-  return 0;
+  char *buffer_ptr = buffer;
+  int bytes_read, bytes;
+
+  if (fd < STDIN_FILENO)
+    return -1;
+  /* Read from stdin. File descriptor 0. */
+  if (fd == STDIN_FILENO)
+    {
+      uint8_t c;
+      while (bytes_read < length)
+        {
+          c = input_getc ();
+          if (!put_user_ (buffer_ptr++, c))
+            return -1;
+          bytes_read++;
+        }
+    }
+  else 
+    {
+      /* Read from other file descriptors. */
+      int cur;
+      char buf [WR_LIMIT];
+      struct thread *t = thread_current ();
+      if (t->fd_table [fd] == NULL)
+        return -1;
+      while (bytes_read < length)
+        {
+          lock_acquire (&GENGAR);
+          bytes = file_read (t->fd_table [fd], buf, WR_LIMIT);
+          lock_release (&GENGAR);
+          for (cur = 0; cur < bytes; cur++)
+            {
+              if (!put_user_ (buffer_ptr++, buf[cur]))
+                return -1;
+            }
+          bytes_read += bytes;
+          if (bytes < WR_LIMIT)
+            break;
+        }
+    }
+  return bytes_read;
 }
 
 /* Writes size bytes from buffer to the open file fd. Returns the
@@ -339,7 +375,7 @@ syscall_read (int fd, void *buffer, unsigned length)
 static int
 syscall_write (int fd, const void *buffer, unsigned length)
 {
-  int bytes_written;
+  int bytes_written, bytes;
 
   /* Validate every address in the buffer belongs to the user. */
   if (!validate_buffer ((const char *) buffer, length))
@@ -350,20 +386,36 @@ syscall_write (int fd, const void *buffer, unsigned length)
   /* Use putbuf to write to STDIN. */
   if (fd == STDOUT_FILENO)
     {
-      while (length >= WRITE_LIMIT)
+      while (length >= WR_LIMIT)
         {
           lock_acquire (&GENGAR);
-          putbuf (buffer, WRITE_LIMIT);
+          putbuf (buffer, WR_LIMIT);
           lock_release (&GENGAR);
-          length = length - WRITE_LIMIT;
-          bytes_written += WRITE_LIMIT;
+          length = length - WR_LIMIT;
+          bytes_written += WR_LIMIT;
         }
       lock_acquire (&GENGAR);
       putbuf (buffer, length);
       lock_release (&GENGAR);
       bytes_written += length;
     }
-  /* TODO Use file_write to write to other file descriptors. */
+  else 
+    {
+      /* Use file_write to write to other file descriptors. */
+      struct thread *t = thread_current ();
+      if (t->fd_table [fd] == NULL)
+        return -1;
+      while (bytes_written < length)
+        {
+          lock_acquire (&GENGAR);
+          bytes = file_write (t->fd_table [fd], buffer, WR_LIMIT);
+          lock_release (&GENGAR);
+          /* Break if eof reached before length bytes written. */
+          bytes_written += bytes;
+          if (bytes < WR_LIMIT)
+            break;
+        }
+    }
   return bytes_written;
 }
 

@@ -128,7 +128,13 @@ thread_start (void)
   struct semaphore idle_started;
   sema_init (&idle_started, 0);
   thread_create ("idle", PRI_MIN, idle, &idle_started);
-  
+ 
+  /* Give the main thread file capabilities. */
+  int len = strnlen ("main", PGSIZE) + 1;
+  initial_thread->file_name = malloc (len);
+  strlcpy (initial_thread->file_name, "main", len);
+  initial_thread->fd_table = calloc (MIN_NUM_FDS, sizeof (struct file *));
+
   /* Start preemptive thread scheduling. */
   intr_enable ();
 
@@ -696,9 +702,10 @@ init_thread (struct thread *t, const char *name, int priority)
 #ifdef USERPROG
   if (t != initial_thread)
     {
+      int len = strnlen (name, PGSIZE) + 1;
       t->parent = thread_current ();
-      t->file_name = malloc (strnlen (name, PGSIZE) + 1);
-      strlcpy (t->file_name, name, sizeof t->file_name);
+      t->file_name = malloc (len);
+      strlcpy (t->file_name, name, len);
       t->rel = calloc (1, sizeof (struct relationship));
       t->rel->exit_status = -1;
       t->rel->load_status = LOAD_RUNNING;

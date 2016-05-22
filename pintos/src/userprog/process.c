@@ -161,13 +161,14 @@ process_exit (void)
   struct thread *cur = thread_current ();
   uint32_t *pd;
   int cur_fd;
+  
+  /* Free malloc'd data. */
+  free (cur->fd_table);
+  free (cur->file_name);
 
   /* Deal with children. */
   if (cur->parent != NULL)
     {
-      /* Free malloc'd data. */
-      free (cur->file_name);
-      free (cur->fd_table);
 
       /* If parent is dead, free relationship.
          Otherwise, set child_exited to true and 
