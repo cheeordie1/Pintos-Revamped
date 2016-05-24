@@ -45,11 +45,17 @@ process_execute (const char *cmdline)
   strlcpy (cmd_copy, cmdline_, PGSIZE);
 
   /* Parse the file name from the CMDLINE. */
-  char *file_name, *save_ptr;
-  file_name = strtok_r (cmdline_, " ", &save_ptr);
+  char file_name[16];
+  char *save_ptr;
+  strlcpy (file_name, cmd_copy, sizeof file_name);
+  strtok_r (file_name, " ", &save_ptr);
+
   /* Create a new thread to execute CMDLINE. */
   tid = thread_create (file_name, PRI_DEFAULT, start_process, cmd_copy);
-  
+ 
+  if (tid == TID_ERROR)
+    palloc_free_page (cmd_copy);
+
   if (tid != TID_ERROR)
     {
       /* Wait for child to load executable and set the relationship pid. */
@@ -72,9 +78,6 @@ process_execute (const char *cmdline)
             }
         }
     }
-
-  if (tid == TID_ERROR)
-    palloc_free_page (cmd_copy);
 
   return tid;
 }
@@ -160,7 +163,7 @@ process_exit (void)
 {
   struct thread *cur = thread_current ();
   uint32_t *pd;
-  int cur_fd;
+
   
   /* Free malloc'd data. */
   free (cur->fd_table);
@@ -169,7 +172,6 @@ process_exit (void)
   /* Deal with children. */
   if (cur->parent != NULL)
     {
-
       /* If parent is dead, free relationship.
          Otherwise, set child_exited to true and 
          signal to potential waiter. */
@@ -310,7 +312,7 @@ static bool validate_segment (const struct Elf32_Phdr *, struct file *);
 static bool load_segment (struct file *file, off_t ofs, uint8_t *upage,
                           uint32_t read_bytes, uint32_t zero_bytes,
                           bool writable);
-static void push_args (char *, char *, void **);
+static void push_args (char *, void **);
 static void push (void *, void **, size_t);
 
 /* Loads an ELF executable from CMDLINE into the current thread.
@@ -326,17 +328,13 @@ load (const char *cmdline, void (**eip) (void), void **esp)
   off_t file_ofs;
   bool success = false;
   int i;
-  char *file_name, *cmdline_, *save_ptr;
+  char *file_name = t->file_name;
 
   /* Allocate and activate page directory. */
   t->pagedir = pagedir_create ();
   if (t->pagedir == NULL) 
     goto done;
   process_activate ();
-
-  /* Parse file name. */
-  cmdline_ = (char *) cmdline;
-  file_name = strtok_r (cmdline_, " ", &save_ptr);
 
   /* Open executable file. */
   file = filesys_open (file_name);
@@ -423,7 +421,7 @@ load (const char *cmdline, void (**eip) (void), void **esp)
     goto done;
 
   /* Place arguments on stack. */
-  push_args (file_name, save_ptr, esp);
+  push_args ((char *) cmdline, esp);
 
   /* Start address. */
   *eip = (void (*) (void)) ehdr.e_entry;
@@ -566,17 +564,15 @@ setup_stack (void **esp)
 
 /* Push the arguments from the command line onto the stack. */
 static void
-push_args (char *file_name, char *cmdline, void **esp)
+push_args (char *cmdline, void **esp)
 {
-  size_t argc;
+  size_t argc = 0;
   char *token, *save_ptr, *arg_ptr;
 
   /* Copy the arguments onto the stack in reverse order of their addresses
      on the stack.
      The file name will be the topmost element on the stack, but its address
      is furthest toward the address 0x0. */
-  push (file_name, esp, strnlen (file_name, PGSIZE) + 1);
-  argc = 1;
   for (token = strtok_r (cmdline, " ", &save_ptr); token != NULL;
        token = strtok_r (NULL, " ", &save_ptr))
     {
@@ -586,7 +582,7 @@ push_args (char *file_name, char *cmdline, void **esp)
   arg_ptr = *esp;
 
   /* Pad the stack to 4-byte aligment. */
-  size_t padding = 4 - ((*(size_t *) esp) % 4);
+  size_t padding = (*(size_t *) esp) % 4;
   if (padding < 4)
     *esp = *esp - padding;
 
