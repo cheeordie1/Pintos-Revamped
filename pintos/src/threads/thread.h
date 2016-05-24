@@ -134,6 +134,7 @@ struct thread
 #ifdef USERPROG
     /* Owned by userprog/process.c. */
     uint32_t *pagedir;                  /* Page directory. */
+    struct file *exe;                   /* Executable file pointer. */
     char *file_name;                    /* Full executable name. */
     struct file **fd_table;             /* Dynamic Array of open fds. */
     int fdt_size;                       /* Current size of fd table. */

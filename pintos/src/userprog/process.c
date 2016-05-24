@@ -164,7 +164,10 @@ process_exit (void)
   struct thread *cur = thread_current ();
   uint32_t *pd;
 
-  
+  /* Close executable. */
+  if (cur->exe != NULL)
+    file_close (cur->exe);
+
   /* Free malloc'd data. */
   free (cur->fd_table);
   free (cur->file_name);
@@ -343,6 +346,8 @@ load (const char *cmdline, void (**eip) (void), void **esp)
       printf ("load: %s: open failed\n", file_name);
       goto done; 
     }
+  else
+    file_deny_write (file);
 
   /* Read and verify executable header. */
   if (file_read (file, &ehdr, sizeof ehdr) != sizeof ehdr
@@ -430,7 +435,11 @@ load (const char *cmdline, void (**eip) (void), void **esp)
 
  done:
   /* We arrive here whether the load is successful or not. */
-  file_close (file);
+  if (!success)
+    file_close (file);
+  else
+    t->exe = file;
+
   return success;
 }
 
