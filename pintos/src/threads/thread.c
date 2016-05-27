@@ -128,12 +128,14 @@ thread_start (void)
   struct semaphore idle_started;
   sema_init (&idle_started, 0);
   thread_create ("idle", PRI_MIN, idle, &idle_started);
- 
+
+#ifdef USERPROG
   /* Give the main thread file capabilities. */
   int len = strnlen ("main", PGSIZE) + 1;
   initial_thread->file_name = malloc (len);
   strlcpy (initial_thread->file_name, "main", len);
   initial_thread->fd_table = calloc (MIN_NUM_FDS, sizeof (struct file *));
+#endif
 
   /* Start preemptive thread scheduling. */
   intr_enable ();

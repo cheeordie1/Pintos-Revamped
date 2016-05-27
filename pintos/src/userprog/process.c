@@ -7,6 +7,7 @@
 #include <string.h>
 #include "userprog/gdt.h"
 #include "userprog/pagedir.h"
+#include "userprog/syscall.h"
 #include "userprog/tss.h"
 #include "filesys/directory.h"
 #include "filesys/file.h"
@@ -132,7 +133,7 @@ start_process (void *cmdline_)
    been successfully called for the given TID, returns -1
    immediately, without waiting. */
 int
-process_wait (tid_t child_tid UNUSED) 
+process_wait (tid_t child_tid) 
 {
   int status = -1;
   struct thread *cur = thread_current ();
@@ -148,9 +149,10 @@ process_wait (tid_t child_tid UNUSED)
           while (!rel->child_exited)
             cond_wait (&rel->wait_cond, &rel->relation_lock);
           status = rel->exit_status;
-          /* Subsequent waits on this tid will return -1. */
-          rel->exit_status = -1;
           lock_release (&rel->relation_lock);
+          /* Delete child so subsequent waits on this tid return -1. */
+          list_remove (e);
+          free (rel);
           break;
         }
     }
@@ -163,14 +165,25 @@ process_exit (void)
 {
   struct thread *cur = thread_current ();
   uint32_t *pd;
+  int cur_fd;
+
+  /* Close all fds. */
+  for (cur_fd = MIN_FD; cur_fd < cur->fdt_size; cur_fd++)
+    {
+      if (cur->fd_table [cur_fd] != NULL)
+        {
+          file_close (cur->fd_table [cur_fd]);
+          cur->fd_table [cur_fd] = NULL;
+        }
+    }
 
   /* Close executable. */
   if (cur->exe != NULL)
-    file_close (cur->exe);
-
-  /* Free malloc'd data. */
-  free (cur->fd_table);
-  free (cur->file_name);
+    {
+      lock_acquire (&GENGAR);
+      file_close (cur->exe);
+      lock_release (&GENGAR);
+    }
 
   /* Deal with children. */
   if (cur->parent != NULL)
@@ -212,6 +225,13 @@ process_exit (void)
           lock_release (&cur_rel->relation_lock);
         }
     }
+
+  /* Notify process exit. */
+  printf ("%s: exit(%d)\n", cur->file_name, cur->rel->exit_status);
+
+  /* Free malloc'd data. */
+  free (cur->fd_table);
+  free (cur->file_name);
 
   /* Destroy the current process's page directory and switch back
      to the kernel-only page directory. */
@@ -340,14 +360,20 @@ load (const char *cmdline, void (**eip) (void), void **esp)
   process_activate ();
 
   /* Open executable file. */
+  lock_acquire (&GENGAR); 
   file = filesys_open (file_name);
+  lock_release (&GENGAR);
   if (file == NULL) 
     {
       printf ("load: %s: open failed\n", file_name);
       goto done; 
     }
   else
-    file_deny_write (file);
+    {
+      lock_acquire (&GENGAR);
+      file_deny_write (file);
+      lock_release (&GENGAR);
+    }
 
   /* Read and verify executable header. */
   if (file_read (file, &ehdr, sizeof ehdr) != sizeof ehdr
@@ -435,8 +461,12 @@ load (const char *cmdline, void (**eip) (void), void **esp)
 
  done:
   /* We arrive here whether the load is successful or not. */
-  if (!success)
-    file_close (file);
+  if (!success && file != NULL)
+    {
+      lock_acquire (&GENGAR);
+      file_close (file);
+      lock_release (&GENGAR);
+    }
   else
     t->exe = file;
 

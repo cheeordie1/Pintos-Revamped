@@ -14,7 +14,9 @@
 #include "threads/vaddr.h"
 #include "userprog/process.h"
 
-#define WR_LIMIT 4096
+/* Keep read limit low to protect kernel stack. */
+#define R_LIMIT 512
+#define WR_LIMIT 256
 #define FILE_NAME_LIMIT 14
 
 static void syscall_handler (struct intr_frame *);
@@ -37,8 +39,6 @@ static int get_user (const uint8_t *);
 static bool put_user (uint8_t *, uint8_t);
 static int open_fd (struct file *);
 static bool validate_buffer (const char *, size_t);
-
-static struct lock GENGAR;
 
 void
 syscall_init (void) 
@@ -116,7 +116,7 @@ syscall_handler (struct intr_frame *f UNUSED)
         f->eax = syscall_wait ((pid_t) arg0);
         break;
       case SYS_CREATE:
-        f->eax = syscall_create ((const char *) arg0, (unsigned) arg1);
+        f->eax = syscall_create ((const char *) arg0, (uint32_t) arg1);
         break;
       case SYS_REMOVE:
         f->eax = syscall_remove ((const char *) arg0);
@@ -128,13 +128,13 @@ syscall_handler (struct intr_frame *f UNUSED)
         f->eax = syscall_filesize (arg0);
         break;
       case SYS_READ:
-        f->eax = syscall_read (arg0, (void *) arg1, (unsigned) arg2);
+        f->eax = syscall_read (arg0, (void *) arg1, (uint32_t) arg2);
         break;
       case SYS_WRITE:
-        f->eax = syscall_write (arg0, (const void *) arg1, (unsigned) arg2);
+        f->eax = syscall_write (arg0, (const void *) arg1, (uint32_t) arg2);
         break;
       case SYS_SEEK:
-        syscall_seek (arg0, (unsigned) arg1);
+        syscall_seek (arg0, (uint32_t) arg1);
         break;
       case SYS_TELL:
         f->eax = syscall_tell (arg0);
@@ -166,18 +166,9 @@ syscall_exit (int status)
 {
   struct thread *t = thread_current ();
   int cur_fd;
-  struct file **fd_file;
 
   /* Set exit status and print exit string. */
   t->rel->exit_status = status;
-  printf ("%s: exit(%d)\n", t->file_name, status);
-  /* Close all open fds. */
-  fd_file = t->fd_table;
-  for (cur_fd = MIN_FD; cur_fd < t->fdt_size; cur_fd++)
-    {
-      if (*fd_file++ != NULL)
-        syscall_close (cur_fd);
-    }
   /* Exit. */
   thread_exit ();
 }
@@ -218,7 +209,7 @@ syscall_wait (pid_t pid)
   not open it: opening the new file is a separate operation which would
   require a open system call.  */
 static bool
-syscall_create (const char *file, unsigned initial_size)
+syscall_create (const char *file, uint32_t initial_size)
 {
   bool success;
 
@@ -317,10 +308,10 @@ syscall_filesize (int fd)
    (due to a condition other than end of file). 
    Fd 0 reads from the keyboard using input_getc(). */
 static int
-syscall_read (int fd, void *buffer, unsigned length)
+syscall_read (int fd, void *buffer, uint32_t length)
 {
   uint8_t *buffer_ptr = buffer;
-  uint16_t bytes_read = 0, bytes = 0, cur;
+  uint32_t bytes_read = 0, bytes = 0, cur, read_amount;
   struct thread *t = thread_current ();
 
   if (fd < STDIN_FILENO || fd >= t->fdt_size)
@@ -340,33 +331,25 @@ syscall_read (int fd, void *buffer, unsigned length)
   else 
     {
       /* Read from other file descriptors. */
-      int read_amount;
-      char *buf = malloc (WR_LIMIT);
+      char buf [R_LIMIT];
       if (t->fd_table [fd] == NULL)
-        {
-          free (buf);
-          return -1;
-        }
+        return -1;
       while (length > 0)
         {
-          read_amount = length > WR_LIMIT ? WR_LIMIT : length;
+          read_amount = length > R_LIMIT ? R_LIMIT : length;
           lock_acquire (&GENGAR);
           bytes = file_read (t->fd_table [fd], buf, read_amount);
           lock_release (&GENGAR);
           for (cur = 0; cur < bytes; cur++)
             {
               if (!put_user_ (buffer_ptr++, buf [cur]))
-                {
-                  free (buf);
-                  syscall_exit (-1);
-                }
+                syscall_exit (-1);
             }
           bytes_read += bytes;
           length -= bytes;
           if (bytes < read_amount)
             break;
         }
-      free (buf);
     }
   return bytes_read;
 }
@@ -381,9 +364,9 @@ syscall_read (int fd, void *buffer, unsigned length)
    Fd 1 writes to the console. 
    Returns -1 if the buffer has invalid addresses. */
 static int
-syscall_write (int fd, const void *buffer, unsigned length)
+syscall_write (int fd, const void *buffer, uint32_t length)
 {
-  uint16_t bytes_written = 0, bytes;
+  uint32_t bytes_written = 0;
   struct thread *t = thread_current ();
   char *buffer_ptr = (char *) buffer;
 
@@ -413,22 +396,11 @@ syscall_write (int fd, const void *buffer, unsigned length)
   else 
     {
       /* Use file_write to write to other file descriptors. */
-      int write_amount;
       if (t->fd_table [fd] == NULL)
         return -1;
-      while (length > 0)
-        {
-          write_amount = length > WR_LIMIT ? WR_LIMIT : length;
-          lock_acquire (&GENGAR);
-          bytes = file_write (t->fd_table [fd], buffer_ptr, write_amount);
-          lock_release (&GENGAR);
-          buffer_ptr += bytes;
-          bytes_written += bytes;
-          length -= bytes;
-          /* Break if eof reached before length bytes written. */
-          if (bytes < write_amount)
-            break;
-        }
+      lock_acquire (&GENGAR);
+      bytes_written = file_write (t->fd_table [fd], buffer_ptr, length);
+      lock_release (&GENGAR);
     }
   return bytes_written;
 }
@@ -441,7 +413,7 @@ syscall_write (int fd, const void *buffer, unsigned length)
    A later read obtains 0 bytes, indicating end of file. 
    A later write extends the file, filling any unwritten gap with zeros. */
 static void
-syscall_seek (int fd, unsigned position)
+syscall_seek (int fd, uint32_t position)
 {
   struct thread *t = thread_current ();
   /* Check fd. */
@@ -457,10 +429,10 @@ syscall_seek (int fd, unsigned position)
 
 /* Returns the position of the next byte to be read or written in open
    file fd, expressed in bytes from the beginning of the file.  */
-static unsigned
+static uint32_t
 syscall_tell (int fd)
 {
-  unsigned int pos;
+  size_t pos;
   struct thread *t = thread_current ();
   /* Check fd. */
   if (fd < MIN_FD || fd >= t->fdt_size)
@@ -565,11 +537,16 @@ open_fd (struct file *file)
   /* Reallocate table if it is filled. */
   if (t->next_fd == (t->fdt_size))
     {
+      int half_size = t->fdt_size;
       t->fdt_size *= 2;
-      t->fd_table = realloc (t->fd_table, t->fdt_size);
+      t->fd_table = realloc (t->fd_table, 
+                             t->fdt_size * sizeof (struct file **));
       /* Exit thread on realloc failure. Hopefully doesn't happen. */
       if (t->fd_table == NULL)
         return -1;
+      else
+        memset (&t->fd_table [half_size], 0, 
+                half_size * sizeof (struct file **));
     }
   return fd;
 }
