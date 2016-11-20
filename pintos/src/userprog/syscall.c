@@ -165,10 +165,11 @@ static void
 syscall_exit (int status)
 {
   struct thread *t = thread_current ();
-  int cur_fd;
+  struct process *p = t->pcb;
 
   /* Set exit status and print exit string. */
-  t->rel->exit_status = status;
+  p->rel->exit_status = status;
+
   /* Exit. */
   thread_exit ();
 }
@@ -290,14 +291,15 @@ syscall_filesize (int fd)
 {
   int len;
   struct thread *t = thread_current ();
+  struct process *p = t->pcb;
   /* Check fd. */
-  if (fd >= t->fdt_size || fd < MIN_FD)
+  if (fd >= p->fdt_size || fd < MIN_FD)
     return -1;
-  if (t->fd_table [fd] == NULL)
+  if (p->fd_table [fd] == NULL)
     return -1;
   /* Get file length. */
   lock_acquire (&GENGAR);
-  len = file_length (t->fd_table [fd]);
+  len = file_length (p->fd_table [fd]);
   lock_release (&GENGAR);
   return len;
 }
@@ -313,8 +315,9 @@ syscall_read (int fd, void *buffer, uint32_t length)
   uint8_t *buffer_ptr = buffer;
   uint32_t bytes_read = 0, bytes = 0, cur, read_amount;
   struct thread *t = thread_current ();
+  struct process *p = t->pcb;
 
-  if (fd < STDIN_FILENO || fd >= t->fdt_size)
+  if (fd < STDIN_FILENO || fd >= p->fdt_size)
     return -1;
   /* Read from stdin. File descriptor 0. */
   if (fd == STDIN_FILENO)
@@ -332,13 +335,13 @@ syscall_read (int fd, void *buffer, uint32_t length)
     {
       /* Read from other file descriptors. */
       char buf [R_LIMIT];
-      if (t->fd_table [fd] == NULL)
+      if (p->fd_table [fd] == NULL)
         return -1;
       while (length > 0)
         {
           read_amount = length > R_LIMIT ? R_LIMIT : length;
           lock_acquire (&GENGAR);
-          bytes = file_read (t->fd_table [fd], buf, read_amount);
+          bytes = file_read (p->fd_table [fd], buf, read_amount);
           lock_release (&GENGAR);
           for (cur = 0; cur < bytes; cur++)
             {
@@ -368,13 +371,14 @@ syscall_write (int fd, const void *buffer, uint32_t length)
 {
   uint32_t bytes_written = 0;
   struct thread *t = thread_current ();
+  struct process *p = t->pcb;
   char *buffer_ptr = (char *) buffer;
 
   /* Validate every address in the buffer belongs to the user. */
   if (!validate_buffer ((const char *) buffer_ptr, length))
     syscall_exit (-1);
   /* Do nothing for invalid file descriptors. */
-  if (fd <= STDIN_FILENO || fd >= t->fdt_size)
+  if (fd <= STDIN_FILENO || fd >= p->fdt_size)
     return -1;
   /* Use putbuf to write to STDIN. */
   if (fd == STDOUT_FILENO)
@@ -396,10 +400,10 @@ syscall_write (int fd, const void *buffer, uint32_t length)
   else 
     {
       /* Use file_write to write to other file descriptors. */
-      if (t->fd_table [fd] == NULL)
+      if (p->fd_table [fd] == NULL)
         return -1;
       lock_acquire (&GENGAR);
-      bytes_written = file_write (t->fd_table [fd], buffer_ptr, length);
+      bytes_written = file_write (p->fd_table [fd], buffer_ptr, length);
       lock_release (&GENGAR);
     }
   return bytes_written;
@@ -416,14 +420,16 @@ static void
 syscall_seek (int fd, uint32_t position)
 {
   struct thread *t = thread_current ();
+  struct process *p = t->pcb;
+
   /* Check fd. */
-  if (fd < MIN_FD || fd >= t->fdt_size)
+  if (fd < MIN_FD || fd >= p->fdt_size)
     return;
-  if (t->fd_table [fd] == NULL)
+  if (p->fd_table [fd] == NULL)
     return;
   /* Seek file position. */
   lock_acquire (&GENGAR);
-  file_seek (t->fd_table [fd], position);
+  file_seek (p->fd_table [fd], position);
   lock_release (&GENGAR);
 }
 
@@ -434,14 +440,16 @@ syscall_tell (int fd)
 {
   size_t pos;
   struct thread *t = thread_current ();
+  struct process *p = t->pcb;
+
   /* Check fd. */
-  if (fd < MIN_FD || fd >= t->fdt_size)
+  if (fd < MIN_FD || fd >= p->fdt_size)
     return 0;
-  if (t->fd_table [fd] == NULL)
+  if (p->fd_table [fd] == NULL)
     return 0;
   /* Tell position of file. */
   lock_acquire (&GENGAR);
-  pos = file_tell (t->fd_table [fd]);
+  pos = file_tell (p->fd_table [fd]);
   lock_release (&GENGAR);
   return pos;
 }
@@ -453,18 +461,20 @@ static void
 syscall_close (int fd)
 {
   struct thread *t = thread_current ();
+  struct process *p = t->pcb;
+
   /* Check fd. */
-  if (fd < MIN_FD || fd >= t->fdt_size)
+  if (fd < MIN_FD || fd >= p->fdt_size)
     return;
-  if (t->fd_table [fd] == NULL)
+  if (p->fd_table [fd] == NULL)
     return;
   /* Close fd. */
   lock_acquire (&GENGAR);
-  file_close (t->fd_table [fd]);
+  file_close (p->fd_table [fd]);
   lock_release (&GENGAR);
-  t->fd_table [fd] = NULL;
-  if (fd < t->next_fd)
-    t->next_fd = fd;
+  p->fd_table [fd] = NULL;
+  if (fd < p->next_fd)
+    p->next_fd = fd;
 }
 
 /* Reads a byte at user virtual address UADDR
@@ -524,28 +534,29 @@ open_fd (struct file *file)
 {
   int fd;
   struct thread *t = thread_current ();
+  struct process *p = t->pcb;
 
   /* Set next entry. */
-  fd = t->next_fd;
-  t->fd_table [fd] = file;
+  fd = p->next_fd;
+  p->fd_table [fd] = file;
   /* Search for next free fd. */
-  for (; t->next_fd < t->fdt_size; t->next_fd++)
+  for (; p->next_fd < p->fdt_size; p->next_fd++)
     {
-      if (t->fd_table [t->next_fd] == NULL)
+      if (p->fd_table [p->next_fd] == NULL)
         break;
     }
   /* Reallocate table if it is filled. */
-  if (t->next_fd == (t->fdt_size))
+  if (p->next_fd == (p->fdt_size))
     {
-      int half_size = t->fdt_size;
-      t->fdt_size *= 2;
-      t->fd_table = realloc (t->fd_table, 
-                             t->fdt_size * sizeof (struct file **));
+      int half_size = p->fdt_size;
+      p->fdt_size *= 2;
+      p->fd_table = realloc (p->fd_table, 
+                             p->fdt_size * sizeof (struct file **));
       /* Exit thread on realloc failure. Hopefully doesn't happen. */
-      if (t->fd_table == NULL)
+      if (p->fd_table == NULL)
         return -1;
       else
-        memset (&t->fd_table [half_size], 0, 
+        memset (&p->fd_table [half_size], 0, 
                 half_size * sizeof (struct file **));
     }
   return fd;

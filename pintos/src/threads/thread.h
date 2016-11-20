@@ -4,6 +4,7 @@
 #include <debug.h>
 #include <list.h>
 #include <stdint.h>
+#include "vm/page.h"
 #include "fixed-point.h"
 #include "synch.h"
 
@@ -25,35 +26,6 @@ typedef int tid_t;
 #define PRI_MIN 0                       /* Lowest priority. */
 #define PRI_DEFAULT 31                  /* Default priority. */
 #define PRI_MAX 63                      /* Highest priority. */
-
-#ifdef USERPROG
-#define MIN_FD 3
-#define MIN_NUM_FDS 128
-/* Status for a loading process. */
-enum load_status
-  {
-    LOAD_RUNNING,
-    LOAD_FAILED,
-    LOAD_SUCCESS
-  };
-
-/* A relationship between a child and parent process.
-   
-   Holds the status of the parent and child and a lock to read and write the
-   statuses. This structure should be allocated on the heap, not on the stack,
-   because it is shared between two different stacks, and one may be removed
-   without the other's knowledge.
-   If a child dies first, the parent will delete the relationship data.
-   If a parent dies fist, the child will delete the relationship data. */
-struct relationship
-  {
-    struct list_elem elem;
-    bool parent_exited, child_exited;
-    int exit_status, load_status, child_pid;
-    struct lock relation_lock;
-    struct condition wait_cond;
-  };
-#endif
 
 /* A kernel thread or user process.
 
@@ -125,26 +97,17 @@ struct thread
     int nice;                           /* Likelihood to donate. */
     fp recent_cpu;                      /* Recent CPU time per process. */
 
+#ifdef USERPROG
+    /* Owned by userprog/process.c. */
+    uint32_t *pagedir;                  /* Page directory. */
+    struct process *pcb;                /* Pointer to process control block. */
+    struct thread *parent;              /* Pointer to parent. */
+#endif
+
     /* Shared between thread.c and synch.c. */
     struct list_elem elem;              /* List element. */
     struct list acquired_locks;         /* List of acquired locks. */
     struct lock *waiting_on_lock;       /* Lock that a thread wants. */
-
-
-#ifdef USERPROG
-    /* Owned by userprog/process.c. */
-    uint32_t *pagedir;                  /* Page directory. */
-    struct file *exe;                   /* Executable file pointer. */
-    char *file_name;                    /* Full executable name. */
-    struct file **fd_table;             /* Dynamic Array of open fds. */
-    int fdt_size;                       /* Current size of fd table. */
-    int next_fd;                        /* Next free file descriptor. */
-
-    /* Shared between a parent and child process. */
-    struct thread *parent;              /* Pointer to parent. */
-    struct relationship *rel;           /* Shared data with parent. */
-    struct list children;               /* List of child relationships. */
-#endif
 
     /* Owned by thread.c. */
     unsigned magic;                     /* Detects stack overflow. */

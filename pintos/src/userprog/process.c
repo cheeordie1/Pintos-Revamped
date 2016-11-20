@@ -45,42 +45,80 @@ process_execute (const char *cmdline)
     return TID_ERROR;
   strlcpy (cmd_copy, cmdline_, PGSIZE);
 
-  /* Parse the file name from the CMDLINE. */
-  char file_name[16];
+  /* Parse the file name or first 15 letters from the CMDLINE. */
+  char file_name [16];
   char *save_ptr;
   strlcpy (file_name, cmd_copy, sizeof file_name);
   strtok_r (file_name, " ", &save_ptr);
 
   /* Create a new thread to execute CMDLINE. */
   tid = thread_create (file_name, PRI_DEFAULT, start_process, cmd_copy);
- 
+
   if (tid == TID_ERROR)
     palloc_free_page (cmd_copy);
 
   if (tid != TID_ERROR)
     {
       /* Wait for child to load executable and set the relationship pid. */
-      struct thread *cur = thread_current ();
+      struct process *cur_p = thread_current ()->pcb;
+      sema_down (&cur_p->load_child_sema);
+
+      /* See if child failed to load. */
       struct list_elem *e;
-      for (e = list_begin (&cur->children); e != list_end (&cur->children);
+      for (e = list_begin (&cur_p->children); 
+           e != list_end (&cur_p->children);
            e = list_next (e))
         {
           struct relationship *rel = list_entry (e, struct relationship,
                                                  elem);
           if (rel->child_pid == tid)
             {
-              lock_acquire (&rel->relation_lock);
-              while (rel->load_status == LOAD_RUNNING)
-                cond_wait (&rel->wait_cond, &rel->relation_lock);
-              if (rel->load_status == LOAD_FAILED)
+              if (!rel->load_success)
                 tid = TID_ERROR;
-              lock_release (&rel->relation_lock);
               break;
             }
         }
     }
 
   return tid;
+}
+
+/* Function to initialize the process control block. */
+void
+init_process (struct thread *t, char *cmdline)
+{
+  int len;
+  struct process *pcb;
+
+  t->pcb = calloc (1, sizeof (struct process));
+  pcb = t->pcb;
+
+  /* Initialize synchronization sempahore. */
+  sema_init (&pcb->load_child_sema, 0);
+
+  /* Copy full executable file name. */
+  len = strcspn (cmdline, " ") + 1;
+  pcb->file_name = malloc (len);
+  strlcpy (pcb->file_name, cmdline, len);
+
+  /* Initialize relationship with parent except for main. */
+  if (t->parent != NULL)
+    {
+      pcb->rel = calloc (1, sizeof (struct relationship));
+      pcb->rel->child_pid = t->tid;
+      pcb->rel->exit_status = -1;
+      pcb->rel->load_success = false;
+      lock_init (&pcb->rel->relation_lock);
+      cond_init (&pcb->rel->wait_cond);
+      list_push_back (&t->parent->pcb->children, &pcb->rel->elem);
+    }
+
+  list_init (&pcb->children);
+
+  /* Initialize table of file descriptors. */
+  pcb->fd_table = calloc (MIN_NUM_FDS, sizeof (struct file *));
+  pcb->fdt_size = MIN_NUM_FDS;
+  pcb->next_fd = MIN_FD;
 }
 
 /* A thread function that loads a user process and starts it
@@ -91,6 +129,7 @@ start_process (void *cmdline_)
   char *cmdline = cmdline_;
   struct intr_frame if_;
   bool success;
+  struct thread *cur = thread_current ();
 
   /* Initialize interrupt frame and load executable. */
   memset (&if_, 0, sizeof if_);
@@ -104,14 +143,10 @@ start_process (void *cmdline_)
      Otherwise, wake parent. */
   palloc_free_page (cmdline);
 
-  struct thread *cur = thread_current ();
-  lock_acquire (&cur->rel->relation_lock);
-  if (!success)
-    cur->rel->load_status = LOAD_FAILED;
-  else 
-    cur->rel->load_status = LOAD_SUCCESS;
-  cond_signal (&cur->rel->wait_cond, &cur->rel->relation_lock);
-  lock_release (&cur->rel->relation_lock);
+  cur->pcb->rel->load_success = success;
+
+  /* Unblock parent waiting for PCB init. */
+  sema_up (&cur->parent->pcb->load_child_sema);
 
   if (!success)
     thread_exit ();
@@ -136,9 +171,9 @@ int
 process_wait (tid_t child_tid) 
 {
   int status = -1;
-  struct thread *cur = thread_current ();
+  struct process *cur_p = thread_current ()->pcb;
   struct list_elem *e;
-  for (e = list_begin (&cur->children); e != list_end (&cur->children);
+  for (e = list_begin (&cur_p->children); e != list_end (&cur_p->children);
        e = list_next (e))
     {
       struct relationship *rel = list_entry (e, struct relationship,
@@ -164,51 +199,54 @@ void
 process_exit (void)
 {
   struct thread *cur = thread_current ();
+  struct process *cur_p = cur->pcb;
   uint32_t *pd;
   int cur_fd;
 
+  ASSERT (cur_p != NULL);
+
   /* Close all fds. */
-  for (cur_fd = MIN_FD; cur_fd < cur->fdt_size; cur_fd++)
+  for (cur_fd = MIN_FD; cur_fd < cur_p->fdt_size; cur_fd++)
     {
-      if (cur->fd_table [cur_fd] != NULL)
+      if (cur_p->fd_table [cur_fd] != NULL)
         {
-          file_close (cur->fd_table [cur_fd]);
-          cur->fd_table [cur_fd] = NULL;
+          file_close (cur_p->fd_table [cur_fd]);
+          cur_p->fd_table [cur_fd] = NULL;
         }
     }
 
   /* Close executable. */
-  if (cur->exe != NULL)
+  if (cur_p->exe != NULL)
     {
       lock_acquire (&GENGAR);
-      file_close (cur->exe);
+      file_close (cur_p->exe);
       lock_release (&GENGAR);
     }
 
-  /* Deal with children. */
+  /* Deal with parent and children. */
   if (cur->parent != NULL)
     {
       /* If parent is dead, free relationship.
          Otherwise, set child_exited to true and 
          signal to potential waiter. */
-      lock_acquire (&cur->rel->relation_lock);
-      if (cur->rel->parent_exited)
+      lock_acquire (&cur_p->rel->relation_lock);
+      if (cur_p->rel->parent_exited)
         {
-          lock_release (&cur->rel->relation_lock);
-          free (cur->rel);
+          lock_release (&cur_p->rel->relation_lock);
+          free (cur_p->rel);
         }
       else
         {
-          cur->rel->child_exited = true;
-          cond_signal (&cur->rel->wait_cond, &cur->rel->relation_lock);
-          lock_release (&cur->rel->relation_lock);
+          cur_p->rel->child_exited = true;
+          cond_signal (&cur_p->rel->wait_cond, &cur_p->rel->relation_lock);
+          lock_release (&cur_p->rel->relation_lock);
         }
     }
 
   /* For each dead child, free relationship.
      For each non-dead child, set parent_exited to true. */
-  struct list_elem *e = list_begin (&cur->children);
-  while (e != list_end (&cur->children)) 
+  struct list_elem *e = list_begin (&cur_p->children);
+  while (e != list_end (&cur_p->children)) 
     {
       struct relationship *cur_rel = list_entry (e, struct relationship,
                                                  elem);
@@ -227,11 +265,11 @@ process_exit (void)
     }
 
   /* Notify process exit. */
-  printf ("%s: exit(%d)\n", cur->file_name, cur->rel->exit_status);
+  printf ("%s: exit(%d)\n", cur_p->file_name, cur_p->rel->exit_status);
 
   /* Free malloc'd data. */
-  free (cur->fd_table);
-  free (cur->file_name);
+  free (cur_p->fd_table);
+  free (cur_p->file_name);
 
   /* Destroy the current process's page directory and switch back
      to the kernel-only page directory. */
@@ -266,7 +304,7 @@ process_activate (void)
      interrupts. */
   tss_update ();
 }
-
+
 /* We load ELF binaries.  The following definitions are taken
    from the ELF specification, [ELF1], more-or-less verbatim.  */
 
@@ -351,13 +389,18 @@ load (const char *cmdline, void (**eip) (void), void **esp)
   off_t file_ofs;
   bool success = false;
   int i;
-  char *file_name = t->file_name;
+  char *file_name;
+
+  /* Initialize process control block. */
+  init_process (t, (char *) cmdline);
 
   /* Allocate and activate page directory. */
   t->pagedir = pagedir_create ();
   if (t->pagedir == NULL) 
     goto done;
   process_activate ();
+
+  file_name = t->pcb->file_name; 
 
   /* Open executable file. */
   lock_acquire (&GENGAR); 
@@ -468,7 +511,7 @@ load (const char *cmdline, void (**eip) (void), void **esp)
       lock_release (&GENGAR);
     }
   else
-    t->exe = file;
+    t->pcb->exe = file;
 
   return success;
 }

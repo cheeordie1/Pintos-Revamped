@@ -131,10 +131,7 @@ thread_start (void)
 
 #ifdef USERPROG
   /* Give the main thread file capabilities. */
-  int len = strnlen ("main", PGSIZE) + 1;
-  initial_thread->file_name = malloc (len);
-  strlcpy (initial_thread->file_name, "main", len);
-  initial_thread->fd_table = calloc (MIN_NUM_FDS, sizeof (struct file *));
+  init_process (initial_thread, "main");
 #endif
 
   /* Start preemptive thread scheduling. */
@@ -153,13 +150,19 @@ thread_tick (void)
 
   /* Update statistics. */
   if (t == idle_thread)
-    idle_ticks++;
+    {
+      idle_ticks++;
+    }
 #ifdef USERPROG
   else if (t->pagedir != NULL)
-    user_ticks++;
+    {
+      user_ticks++;
+    }
 #endif
   else
-    kernel_ticks++;
+    {
+      kernel_ticks++;
+    }
 
   if (thread_mlfqs)
     {
@@ -238,11 +241,6 @@ thread_create (const char *name, int priority,
   if (thread_mlfqs)
     thread_calc_priority (t, NULL);
   tid = t->tid = allocate_tid ();
-
-#ifdef USERPROG
-  /* Set tid in relationship. */
-  t->rel->child_pid = t->tid;
-#endif
 
   /* Stack frame for kernel_thread(). */
   kf = alloc_frame (t, sizeof *kf);
@@ -704,21 +702,8 @@ init_thread (struct thread *t, const char *name, int priority)
 #ifdef USERPROG
   if (t != initial_thread)
     {
-      int len = strnlen (name, PGSIZE) + 1;
       t->parent = thread_current ();
-      t->file_name = malloc (len);
-      strlcpy (t->file_name, name, len);
-      t->rel = calloc (1, sizeof (struct relationship));
-      t->rel->exit_status = -1;
-      t->rel->load_status = LOAD_RUNNING;
-      lock_init (&t->rel->relation_lock);
-      cond_init (&t->rel->wait_cond);
-      list_push_back (&t->parent->children, &t->rel->elem);
-      t->fd_table = calloc (MIN_NUM_FDS, sizeof (struct file *));
     }
-  t->fdt_size = MIN_NUM_FDS;
-  t->next_fd = MIN_FD;
-  list_init (&t->children);
 #endif
 
   old_level = intr_disable ();

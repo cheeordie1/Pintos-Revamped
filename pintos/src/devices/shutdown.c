@@ -9,6 +9,9 @@
 #ifdef USERPROG
 #include "userprog/exception.h"
 #endif
+#ifdef VM
+#include "vm/frame.h"
+#endif
 #ifdef FILESYS
 #include "devices/block.h"
 #include "filesys/filesys.h"
@@ -92,6 +95,10 @@ shutdown_power_off (void)
 
 #ifdef FILESYS
   filesys_done ();
+#endif
+
+#ifdef VM
+  frame_destroy ();
 #endif
 
   print_stats ();
